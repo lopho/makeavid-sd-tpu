@@ -16,7 +16,7 @@ def get_sinusoidal_embeddings(
 ) -> jax.Array:
     assert timesteps.ndim == 1, "Timesteps should be a 1d-array"
     assert embedding_dim % 2 == 0, f"Embedding dimension {embedding_dim} should be even"
-    num_timescales = dtype(embedding_dim // 2)
+    num_timescales = float(embedding_dim // 2)
     log_timescale_increment = jnp.log(max_timescale / min_timescale) / (num_timescales - freq_shift)
     inv_timescales = min_timescale * jnp.exp(jnp.arange(num_timescales, dtype = dtype) * -log_timescale_increment)
     emb = jnp.expand_dims(timesteps, 1) * jnp.expand_dims(inv_timescales, 0)

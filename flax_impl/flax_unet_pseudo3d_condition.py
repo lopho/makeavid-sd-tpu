@@ -60,7 +60,7 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     dtype: jnp.dtype = jnp.float32
 
     def init_weights(self, rng: jax.random.KeyArray) -> FrozenDict:
-        sample_shape = (1, 1, self.in_channels, *self.sample_size)
+        sample_shape = (1, self.in_channels, 1, *self.sample_size)
         sample = jnp.zeros(sample_shape, dtype = self.dtype)
         timesteps = jnp.ones((1, ), dtype = jnp.int32)
         encoder_hidden_states = jnp.zeros((1, 1, self.cross_attention_dim), dtype = self.dtype)

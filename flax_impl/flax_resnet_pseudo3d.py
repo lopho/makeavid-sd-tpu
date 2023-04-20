@@ -25,8 +25,8 @@ class ConvPseudo3D(nn.Module):
         )
         self.temporal_conv = nn.Conv(
                 features = self.features,
-                kernel_size = (3, 3),
-                padding = (1, 1),
+                kernel_size = (3,),
+                padding = 'SAME',
                 dtype = self.dtype,
                 bias_init = nn.initializers.zeros_init()
                 # TODO dirac delta (identity) initialization impl
@@ -70,7 +70,7 @@ class UpsamplePseudo3D(nn.Module):
         if is_video:
             b, *_ = hidden_states.shape
             hidden_states = einops.rearrange(hidden_states, 'b f h w c -> (b f) h w c')
-        batch, *_, h, w, c = hidden_states.shape
+        batch, h, w, c = hidden_states.shape
         hidden_states = jax.image.resize(
                 image = hidden_states,
                 shape = (batch, h * 2, w * 2, c),
@@ -78,6 +78,7 @@ class UpsamplePseudo3D(nn.Module):
         )
         if is_video:
             hidden_states = einops.rearrange(hidden_states, '(b f) h w c -> b f h w c', b = b)
+        hidden_states = self.conv(hidden_states)
         return hidden_states
 
 
