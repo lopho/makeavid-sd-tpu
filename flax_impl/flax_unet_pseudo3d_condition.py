@@ -60,7 +60,7 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     dtype: jnp.dtype = jnp.float32
 
     def init_weights(self, rng: jax.random.KeyArray) -> FrozenDict:
-        sample_shape = (1, self.in_channels, 1, *self.sample_size)
+        sample_shape = (1, 1, self.in_channels, *self.sample_size)
         sample = jnp.zeros(sample_shape, dtype = self.dtype)
         timesteps = jnp.ones((1, ), dtype = jnp.int32)
         encoder_hidden_states = jnp.zeros((1, 1, self.cross_attention_dim), dtype = self.dtype)
@@ -181,8 +181,8 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             timesteps = timesteps.astype(dtype = self.dtype)
         if timesteps.ndim == 0:
             timesteps = jnp.expand_dims(timesteps, 0)
-        # b,c,f,h,w -> b,f,h,w,c
-        sample = jnp.transpose(sample, (0, 2, 3, 4, 1))
+        # b,f,c,h,w -> b,f,h,w,c
+        sample = jnp.transpose(sample, (0, 1, 3, 4, 2))
 
         t_emb = self.time_proj(timesteps)
         t_emb = self.time_embedding(t_emb)
@@ -230,8 +230,8 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         sample = nn.silu(sample)
         sample = self.conv_out(sample)
 
-        # b,f,h,w,c -> b,c,f,h,w
-        sample = jnp.transpose(sample, (0, 4, 1, 2, 3))
+        # b,f,h,w,c -> b,f,c,h,w
+        sample = jnp.transpose(sample, (0, 1, 4, 2, 3))
         if not return_dict:
             return (sample, )
         return UNetPseudo3DConditionOutput(sample = sample)
