@@ -21,7 +21,7 @@ from flax_embeddings import (
         TimestepEmbedding,
         Timesteps
 )
-from flax_resnet_pseudo3d import Pseudo3DConv
+from flax_resnet_pseudo3d import ConvPseudo3D
 
 
 class UNetPseudo3DConditionOutput(BaseOutput):
@@ -30,7 +30,7 @@ class UNetPseudo3DConditionOutput(BaseOutput):
 
 @flax_register_to_config
 class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
-    sample_size: Tuple[int, int] = (32, 32)
+    sample_size: Tuple[int, int] = (64, 64)
     in_channels: int = 4
     out_channels: int = 4
     down_block_types: Tuple[str] = (
@@ -45,7 +45,12 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             "CrossAttnUpBlockPseudo3D",
             "CrossAttnUpBlockPseudo3D"
     )
-    block_out_channels: Tuple[int] = (320, 640, 1280, 1280)
+    block_out_channels: Tuple[int] = (
+            320,
+            640,
+            1280,
+            1280
+    )
     layers_per_block: int = 2
     attention_head_dim: Union[int, Tuple[int]] = 8
     cross_attention_dim: int = 768
@@ -69,8 +74,8 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         else:
             attention_head_dim = self.attention_head_dim
         time_embed_dim = self.block_out_channels[0] * 4
-        self.conv_in = Pseudo3DConv(
-                dim_out = self.block_out_channels[0],
+        self.conv_in = ConvPseudo3D(
+                features = self.block_out_channels[0],
                 kernel_size = (3, 3),
                 strides = (1, 1),
                 padding = ((1, 1), (1, 1)),
@@ -158,8 +163,8 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                 epsilon = 1e-5,
                 dtype = self.dtype
         )
-        self.conv_out = Pseudo3DConv(
-                dim_out = self.out_channels,
+        self.conv_out = ConvPseudo3D(
+                features = self.out_channels,
                 kernel_size = (3, 3),
                 strides = (1, 1),
                 padding = ((1, 1), (1, 1)),

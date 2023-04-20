@@ -8,8 +8,8 @@ import flax.linen as nn
 import einops
 
 
-class Pseudo3DConv(nn.Module):
-    dim_out: int
+class ConvPseudo3D(nn.Module):
+    features: int
     kernel_size: Sequence[int]
     strides: Union[None, int, Sequence[int]] = 1
     padding: nn.linear.PaddingLike = 'SAME'
@@ -17,19 +17,19 @@ class Pseudo3DConv(nn.Module):
 
     def setup(self) -> None:
         self.spatial_conv = nn.Conv(
-                self.dim_out,
+                features = self.features,
                 kernel_size = self.kernel_size,
                 strides = self.strides,
                 padding = self.padding,
                 dtype = self.dtype
         )
         self.temporal_conv = nn.Conv(
-                self.dim_out,
+                features = self.features,
                 kernel_size = (3, 3),
                 padding = (1, 1),
                 dtype = self.dtype,
                 bias_init = nn.initializers.zeros_init()
-                # TODO: dirac delta (identity) initialization impl
+                # TODO dirac delta (identity) initialization impl
                 # kernel_init = torch.nn.init.dirac_ <-> jax/lax
         )
 
@@ -57,8 +57,8 @@ class UpsamplePseudo3D(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     def setup(self) -> None:
-        self.conv = Pseudo3DConv(
-                dim_out = self.out_channels,
+        self.conv = ConvPseudo3D(
+                features = self.out_channels,
                 kernel_size = (3, 3),
                 strides = (1, 1),
                 padding = ((1, 1), (1, 1)),
@@ -86,8 +86,8 @@ class DownsamplePseudo3D(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     def setup(self) -> None:
-        self.conv = Pseudo3DConv(
-                dim_out = self.out_channels,
+        self.conv = ConvPseudo3D(
+                features = self.out_channels,
                 kernel_size = (3, 3),
                 strides = (2, 2),
                 padding = ((1, 1), (1, 1)),
@@ -112,8 +112,8 @@ class ResnetBlockPseudo3D(nn.Module):
                 epsilon = 1e-5,
                 dtype = self.dtype
         )
-        self.conv1 = Pseudo3DConv(
-                dim_out = out_channels,
+        self.conv1 = ConvPseudo3D(
+                features = out_channels,
                 kernel_size = (3, 3),
                 strides = (1, 1),
                 padding = ((1, 1), (1, 1)),
@@ -128,8 +128,8 @@ class ResnetBlockPseudo3D(nn.Module):
                 epsilon = 1e-5,
                 dtype = self.dtype
         )
-        self.conv2 = Pseudo3DConv(
-                dim_out = out_channels,
+        self.conv2 = ConvPseudo3D(
+                features = out_channels,
                 kernel_size = (3, 3),
                 strides = (1, 1),
                 padding = ((1, 1), (1, 1)),
@@ -138,8 +138,8 @@ class ResnetBlockPseudo3D(nn.Module):
         use_nin_shortcut = self.in_channels != out_channels if self.use_nin_shortcut is None else self.use_nin_shortcut
         self.conv_shortcut = None
         if use_nin_shortcut:
-            self.conv_shortcut = Pseudo3DConv(
-                    dim_out = self.out_channels,
+            self.conv_shortcut = ConvPseudo3D(
+                    features = self.out_channels,
                     kernel_size = (1, 1),
                     strides = (1, 1),
                     padding = 'VALID',
