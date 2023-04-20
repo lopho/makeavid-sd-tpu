@@ -22,7 +22,7 @@ class UNetMidBlockPseudo3DCrossAttn(nn.Module):
                         in_channels = self.in_channels,
                         out_channels = self.in_channels,
                         dtype = self.dtype
-            )
+                )
         ]
         attentions = []
         for _ in range(self.num_layers):
@@ -48,12 +48,12 @@ class UNetMidBlockPseudo3DCrossAttn(nn.Module):
             hidden_states: jax.Array,
             temb: jax.Array,
             encoder_hidden_states = jax.Array
-        ) -> jax.Array:
-            hidden_states = self.resnets[0](hidden_states, temb)
-            for attn, resnet in zip(self.attentions, self.resnets[1:]):
-                hidden_states = attn(hidden_states, encoder_hidden_states)
-                hidden_states = resnet(hidden_states, temb)
-            return hidden_states
+    ) -> jax.Array:
+        hidden_states = self.resnets[0](hidden_states, temb)
+        for attn, resnet in zip(self.attentions, self.resnets[1:]):
+            hidden_states = attn(hidden_states, encoder_hidden_states)
+            hidden_states = resnet(hidden_states, temb)
+        return hidden_states
 
 
 class CrossAttnDownBlockPseudo3D(nn.Module):
@@ -89,12 +89,12 @@ class CrossAttnDownBlockPseudo3D(nn.Module):
         self.attentions = attentions
 
         if self.add_downsample:
-            self.down_samplers_0 = DownsamplePseudo3D(
+            self.downsamplers_0 = DownsamplePseudo3D(
                     out_channels = self.out_channels,
                     dtype = self.dtype
             )
         else:
-            self.down_samplers_0 = None
+            self.downsamplers_0 = None
 
     def __call__(self,
             hidden_states: jax.Array,
@@ -107,7 +107,7 @@ class CrossAttnDownBlockPseudo3D(nn.Module):
             hidden_states = attn(hidden_states, encoder_hidden_states)
             output_states += (hidden_states, )
         if self.add_downsample:
-            hidden_states = self.down_samplers_0(hidden_states)
+            hidden_states = self.downsamplers_0(hidden_states)
             output_states += (hidden_states, )
         return hidden_states, output_states
 
