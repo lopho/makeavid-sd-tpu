@@ -2,8 +2,8 @@ from typing import Union, Optional
 import torch
 from torch import nn
 
-from .torch_attention_pseudo3d import TransformerPseudo3DModel
-from .torch_resnet_pseudo3d import Downsample2D, ResnetBlockPseudo3D, Upsample2D
+from torch_attention_pseudo3d import TransformerPseudo3DModel
+from torch_resnet_pseudo3d import Downsample2D, ResnetBlockPseudo3D, Upsample2D
 
 
 class UNetMidBlock2DCrossAttn(nn.Module):
@@ -39,7 +39,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     groups = resnet_groups,
                     dropout = dropout,
                     time_embedding_norm = resnet_time_scale_shift,
-                    non_linearity = resnet_act_fn,
+                    #non_linearity = resnet_act_fn,
                     output_scale_factor = output_scale_factor,
                     pre_norm = resnet_pre_norm
             )
@@ -49,9 +49,9 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         for _ in range(num_layers):
             attentions.append(
                 TransformerPseudo3DModel(
-                        attn_num_head_channels,
-                        in_channels // attn_num_head_channels,
                         in_channels = in_channels,
+                        num_attention_heads = attn_num_head_channels,
+                        attention_head_dim = in_channels // attn_num_head_channels,
                         num_layers = 1,
                         cross_attention_dim = cross_attention_dim,
                         norm_num_groups = resnet_groups
@@ -66,7 +66,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         groups = resnet_groups,
                         dropout = dropout,
                         time_embedding_norm = resnet_time_scale_shift,
-                        non_linearity = resnet_act_fn,
+                        #non_linearity = resnet_act_fn,
                         output_scale_factor = output_scale_factor,
                         pre_norm = resnet_pre_norm
                 )
@@ -121,16 +121,16 @@ class CrossAttnDownBlock2D(nn.Module):
                         groups = resnet_groups,
                         dropout = dropout,
                         time_embedding_norm = resnet_time_scale_shift,
-                        non_linearity = resnet_act_fn,
+                        #non_linearity = resnet_act_fn,
                         output_scale_factor = output_scale_factor,
                         pre_norm = resnet_pre_norm
                 )
             )
             attentions.append(
                 TransformerPseudo3DModel(
-                        attn_num_head_channels,
-                        out_channels // attn_num_head_channels,
                         in_channels = out_channels,
+                        num_attention_heads = attn_num_head_channels,
+                        attention_head_dim = out_channels // attn_num_head_channels,
                         num_layers = 1,
                         cross_attention_dim = cross_attention_dim,
                         norm_num_groups = resnet_groups
@@ -202,7 +202,7 @@ class DownBlock2D(nn.Module):
                         groups = resnet_groups,
                         dropout = dropout,
                         time_embedding_norm = resnet_time_scale_shift,
-                        non_linearity = resnet_act_fn,
+                        #non_linearity = resnet_act_fn,
                         output_scale_factor = output_scale_factor,
                         pre_norm = resnet_pre_norm
                 )
@@ -282,16 +282,16 @@ class CrossAttnUpBlock2D(nn.Module):
                             groups = resnet_groups,
                             dropout = dropout,
                             time_embedding_norm = resnet_time_scale_shift,
-                            non_linearity = resnet_act_fn,
+                            #non_linearity = resnet_act_fn,
                             output_scale_factor = output_scale_factor,
                             pre_norm = resnet_pre_norm
                     )
             )
             attentions.append(
                     TransformerPseudo3DModel(
-                            attn_num_head_channels,
-                            out_channels // attn_num_head_channels,
                             in_channels = out_channels,
+                            num_attention_heads = attn_num_head_channels,
+                            attention_head_dim = out_channels // attn_num_head_channels,
                             num_layers = 1,
                             cross_attention_dim = cross_attention_dim,
                             norm_num_groups = resnet_groups
@@ -365,7 +365,7 @@ class UpBlock2D(nn.Module):
                             groups = resnet_groups,
                             dropout = dropout,
                             time_embedding_norm = resnet_time_scale_shift,
-                            non_linearity = resnet_act_fn,
+                            #non_linearity = resnet_act_fn,
                             output_scale_factor = output_scale_factor,
                             pre_norm = resnet_pre_norm
                     )

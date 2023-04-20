@@ -216,6 +216,7 @@ class ResnetBlockPseudo3D(nn.Module):
         self.up = up
         self.down = down
         self.output_scale_factor = output_scale_factor
+        print('OUTPUT_SCALE_FACTOR:', output_scale_factor)
 
         if groups_out is None:
             groups_out = groups

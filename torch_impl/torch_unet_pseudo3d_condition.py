@@ -4,14 +4,14 @@ import torch
 from torch import nn
 import torch.nn as nn
 
-from .torch_embeddings import TimestepEmbedding, Timesteps
-from .torch_unet_pseudo3d_blocks import (
+from torch_embeddings import TimestepEmbedding, Timesteps
+from torch_unet_pseudo3d_blocks import (
     UNetMidBlock2DCrossAttn,
     get_down_block,
     get_up_block,
 )
 
-from .torch_resnet_pseudo3d import Pseudo3DConv
+from torch_resnet_pseudo3d import Pseudo3DConv
 
 class UNetPseudo3DConditionOutput:
     sample: torch.FloatTensor
@@ -22,7 +22,7 @@ class UNetPseudo3DConditionOutput:
 class UNetPseudo3DConditionModel(nn.Module):
     def __init__(self,
             sample_size: Optional[int] = None,
-            in_channels: int = 4,
+            in_channels: int = 9,
             out_channels: int = 4,
             flip_sin_to_cos: bool = True,
             freq_shift: int = 0,
@@ -47,9 +47,10 @@ class UNetPseudo3DConditionModel(nn.Module):
             norm_eps: float = 1e-5,
             cross_attention_dim: int = 768,
             attention_head_dim: int = 8,
+            **kwargs
     ) -> None:
         super().__init__()
-
+        self.dtype = torch.float32
         self.sample_size = sample_size
         time_embed_dim = block_out_channels[0] * 4
 
