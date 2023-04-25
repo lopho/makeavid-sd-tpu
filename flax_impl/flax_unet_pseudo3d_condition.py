@@ -17,10 +17,11 @@ from flax_unet_pseudo3d_blocks import (
         UpBlockPseudo3D,
         UNetMidBlockPseudo3DCrossAttn
 )
-from flax_embeddings import (
-        TimestepEmbedding,
-        Timesteps
-)
+#from flax_embeddings import (
+#        TimestepEmbedding,
+#        Timesteps
+#)
+from diffusers.models.embeddings_flax import FlaxTimestepEmbedding, FlaxTimesteps
 from flax_resnet_pseudo3d import ConvPseudo3D
 
 
@@ -30,7 +31,7 @@ class UNetPseudo3DConditionOutput(BaseOutput):
 
 @flax_register_to_config
 class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
-    sample_size: Tuple[int, int] = (64, 64)
+    sample_size: Union[int, Tuple[int, int]] = (64, 64)
     in_channels: int = 4
     out_channels: int = 4
     down_block_types: Tuple[str] = (
@@ -58,12 +59,24 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
     freq_shift: int = 0
     use_memory_efficient_attention: bool = False
     dtype: jnp.dtype = jnp.float32
+    param_dtype: str = 'float32'
 
     def init_weights(self, rng: jax.random.KeyArray) -> FrozenDict:
-        sample_shape = (1, 1, self.in_channels, *self.sample_size)
-        sample = jnp.zeros(sample_shape, dtype = self.dtype)
+        if self.param_dtype == 'bfloat16':
+            param_dtype = jnp.bfloat16
+        elif self.param_dtype == 'float16':
+            param_dtype = jnp.float16
+        elif self.param_dtype == 'float32':
+            param_dtype = jnp.float32
+        else:
+            raise ValueError(f'unknown parameter type: {self.param_dtype}')
+        sample_size = self.sample_size
+        if isinstance(sample_size, int):
+            sample_size = (sample_size, sample_size)
+        sample_shape = (1, self.in_channels, 1, *sample_size)
+        sample = jnp.zeros(sample_shape, dtype = param_dtype)
         timesteps = jnp.ones((1, ), dtype = jnp.int32)
-        encoder_hidden_states = jnp.zeros((1, 1, self.cross_attention_dim), dtype = self.dtype)
+        encoder_hidden_states = jnp.zeros((1, 1, self.cross_attention_dim), dtype = param_dtype)
         params_rng, dropout_rng = jax.random.split(rng)
         rngs = { "params": params_rng, "dropout": dropout_rng }
         return self.init(rngs, sample, timesteps, encoder_hidden_states)["params"]
@@ -81,13 +94,12 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                 padding = ((1, 1), (1, 1)),
                 dtype = self.dtype
         )
-        self.time_proj = Timesteps(
+        self.time_proj = FlaxTimesteps(
                 dim = self.block_out_channels[0],
                 flip_sin_to_cos = self.flip_sin_to_cos,
-                freq_shift = self.freq_shift,
-                dtype = self.dtype
+                freq_shift = self.freq_shift
         )
-        self.time_embedding = TimestepEmbedding(
+        self.time_embedding = FlaxTimestepEmbedding(
                 time_embed_dim = time_embed_dim,
                 dtype = self.dtype
         )
@@ -97,7 +109,9 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             input_channels = output_channels
             output_channels = self.block_out_channels[i]
             is_final_block = i == len(self.block_out_channels) - 1
-            if down_block_type == 'CrossAttnDownBlockPseudo3D':
+            # allows loading 3d models with old layer type names in their configs
+            # eg. 2D instead of Pseudo3D, like lxj's timelapse model
+            if down_block_type in ['CrossAttnDownBlockPseudo3D', 'CrossAttnDownBlock2D']:
                 down_block = CrossAttnDownBlockPseudo3D(
                         in_channels = input_channels,
                         out_channels = output_channels,
@@ -107,7 +121,7 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                         use_memory_efficient_attention = self.use_memory_efficient_attention,
                         dtype = self.dtype
                 )
-            elif down_block_type == 'DownBlockPseudo3D':
+            elif down_block_type in ['DownBlockPseudo3D', 'DownBlock2D']:
                 down_block = DownBlockPseudo3D(
                         in_channels = input_channels,
                         out_channels = output_channels,
@@ -134,7 +148,7 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             output_channels = reversed_block_out_channels[i]
             input_channels = reversed_block_out_channels[min(i + 1, len(self.block_out_channels) - 1)]
             is_final_block = i == len(self.block_out_channels) - 1
-            if up_block_type == 'CrossAttnUpBlockPseudo3D':
+            if up_block_type in ['CrossAttnUpBlockPseudo3D', 'CrossAttnUpBlock2D']:
                 up_block = CrossAttnUpBlockPseudo3D(
                         in_channels = input_channels,
                         out_channels = output_channels,
@@ -145,7 +159,7 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
                         use_memory_efficient_attention = self.use_memory_efficient_attention,
                         dtype = self.dtype
                 )
-            elif up_block_type == 'UpBlockPseudo3D':
+            elif up_block_type in ['UpBlockPseudo3D', 'UpBlock2D']:
                 up_block = UpBlockPseudo3D(
                         in_channels = input_channels,
                         out_channels = output_channels,
@@ -160,8 +174,7 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         self.up_blocks = up_blocks
         self.conv_norm_out = nn.GroupNorm(
                 num_groups = 32,
-                epsilon = 1e-5,
-                dtype = self.dtype
+                epsilon = 1e-5
         )
         self.conv_out = ConvPseudo3D(
                 features = self.out_channels,
@@ -177,12 +190,12 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
             encoder_hidden_states: jax.Array,
             return_dict: bool = True
     ) -> Union[UNetPseudo3DConditionOutput, Tuple[jax.Array]]:
-        if timesteps.dtype != self.dtype:
-            timesteps = timesteps.astype(dtype = self.dtype)
-        if timesteps.ndim == 0:
+        if timesteps.dtype != jnp.float32:
+            timesteps = timesteps.astype(dtype = jnp.float32)
+        if len(timesteps.shape) == 0:
             timesteps = jnp.expand_dims(timesteps, 0)
-        # b,f,c,h,w -> b,f,h,w,c
-        sample = jnp.transpose(sample, (0, 1, 3, 4, 2))
+        # b,c,f,h,w -> b,f,h,w,c
+        sample = sample.transpose((0, 2, 3, 4, 1))
 
         t_emb = self.time_proj(timesteps)
         t_emb = self.time_embedding(t_emb)
@@ -230,8 +243,8 @@ class UNetPseudo3DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         sample = nn.silu(sample)
         sample = self.conv_out(sample)
 
-        # b,f,h,w,c -> b,f,c,h,w
-        sample = jnp.transpose(sample, (0, 1, 4, 2, 3))
+        # b,f,h,w,c -> b,c,f,h,w
+        sample = sample.transpose((0, 4, 1, 2, 3))
         if not return_dict:
             return (sample, )
         return UNetPseudo3DConditionOutput(sample = sample)

@@ -110,8 +110,7 @@ class ResnetBlockPseudo3D(nn.Module):
         out_channels = self.in_channels if self.out_channels is None else self.out_channels
         self.norm1 = nn.GroupNorm(
                 num_groups = 32,
-                epsilon = 1e-5,
-                dtype = self.dtype
+                epsilon = 1e-5
         )
         self.conv1 = ConvPseudo3D(
                 features = out_channels,
@@ -126,8 +125,7 @@ class ResnetBlockPseudo3D(nn.Module):
         )
         self.norm2 = nn.GroupNorm(
                 num_groups = 32,
-                epsilon = 1e-5,
-                dtype = self.dtype
+                epsilon = 1e-5
         )
         self.conv2 = ConvPseudo3D(
                 features = out_channels,

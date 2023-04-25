@@ -8,6 +8,7 @@ import flax.linen as nn
 import einops
 
 #from flax_memory_efficient_attention import jax_memory_efficient_attention
+#from flax_attention import FlaxAttention
 from diffusers.models.attention_flax import FlaxAttention
 
 
@@ -23,8 +24,7 @@ class TransformerPseudo3DModel(nn.Module):
         inner_dim = self.num_attention_heads * self.attention_head_dim
         self.norm = nn.GroupNorm(
                 num_groups = 32,
-                epsilon = 1e-5,
-                dtype = self.dtype
+                epsilon = 1e-5
         )
         self.proj_in = nn.Conv(
                 inner_dim,
@@ -33,16 +33,22 @@ class TransformerPseudo3DModel(nn.Module):
                 padding = 'VALID',
                 dtype = self.dtype
         )
-        self.transformer_blocks = [
-                BasicTransformerBlockPseudo3D(
+        transformer_blocks = []
+        #CheckpointTransformerBlock = nn.checkpoint(
+        #        BasicTransformerBlockPseudo3D,
+        #        static_argnums = (2,3,4)
+        #        #prevent_cse = False
+        #)
+        CheckpointTransformerBlock = BasicTransformerBlockPseudo3D
+        for _ in range(self.num_layers):
+            transformer_blocks.append(CheckpointTransformerBlock(
                         dim = inner_dim,
                         num_attention_heads = self.num_attention_heads,
                         attention_head_dim = self.attention_head_dim,
                         use_memory_efficient_attention = self.use_memory_efficient_attention,
                         dtype = self.dtype
-                )
-                for _ in range(self.num_layers)
-        ]
+                ))
+        self.transformer_blocks = transformer_blocks
         self.proj_out = nn.Conv(
                 inner_dim,
                 kernel_size = (1, 1),
@@ -74,10 +80,10 @@ class TransformerPseudo3DModel(nn.Module):
         for block in self.transformer_blocks:
             hidden_states = block(
                     hidden_states,
-                    context = encoder_hidden_states,
-                    frames_length = f,
-                    height = height,
-                    width = width
+                    encoder_hidden_states,
+                    f,
+                    height,
+                    width
             )
         hidden_states = hidden_states.reshape(batch, height, width, channels)
         hidden_states = self.proj_out(hidden_states)
@@ -142,6 +148,14 @@ class BasicTransformerBlockPseudo3D(nn.Module):
             ) + hidden_states
             # temporal attention
             if frames_length is not None:
+                #bf, hw, c = hidden_states.shape
+                # (b f) (h w) c -> b f (h w) c
+                #hidden_states = hidden_states.reshape(bf // frames_length, frames_length, hw, c)
+                #b, f, hw, c = hidden_states.shape
+                # b f (h w) c -> b (h w) f c
+                #hidden_states = hidden_states.transpose(0, 2, 1, 3)
+                # b (h w) f c -> (b h w) f c
+                #hidden_states = hidden_states.reshape(b * hw, frames_length, c)
                 hidden_states = einops.rearrange(
                         hidden_states,
                         '(b f) (h w) c -> (b h w) f c',
@@ -151,6 +165,12 @@ class BasicTransformerBlockPseudo3D(nn.Module):
                 )
                 norm_hidden_states = self.norm_temporal(hidden_states)
                 hidden_states = self.attn_temporal(norm_hidden_states) + hidden_states
+                # (b h w) f c -> b (h w) f c
+                #hidden_states = hidden_states.reshape(b, hw, f, c)
+                # b (h w) f c -> b f (h w) c
+                #hidden_states = hidden_states.transpose(0, 2, 1, 3)
+                # b f h w c -> (b f) (h w) c
+                #hidden_states = hidden_states.reshape(bf, hw, c)
                 hidden_states = einops.rearrange(
                         hidden_states,
                         '(b h w) f c -> (b f) (h w) c',
