@@ -1,5 +1,5 @@
 
-from typing import Any, Optional, Union, Tuple, Dict
+from typing import Any, Optional, Union, Tuple, Dict, List
 
 import os
 import random
@@ -7,7 +7,7 @@ import math
 import time
 import json
 import numpy as np
-from tqdm.auto import tqdm
+from tqdm.auto import tqdm, trange
 
 import torch
 from torch.utils.data import DataLoader
@@ -24,8 +24,12 @@ from flax.training.common_utils import shard
 from diffusers import FlaxUNet2DConditionModel
 
 # inference test, run on these on cpu
-#from diffusers import AutoencoderKL, FlaxDDIMScheduler
-#from transformers import CLIPTextModel
+from diffusers import AutoencoderKL
+from diffusers.schedulers.scheduling_ddim_flax import FlaxDDIMScheduler, DDIMSchedulerState
+from transformers import CLIPTextModel, CLIPTokenizer
+from PIL import Image
+import einops
+
 
 from flax_unet_pseudo3d_condition import UNetPseudo3DConditionModel
 
@@ -129,6 +133,11 @@ class FlaxTrainerUNetPseudo3D:
                 use_memory_efficient_attention = use_memory_efficient_attention
         )
         self._mark_parameters(only_temporal = only_temporal)
+        # optionally for validation + sampling
+        self.tokenizer: Optional[CLIPTokenizer] = None
+        self.text_encoder: Optional[CLIPTextModel] = None
+        self.vae: Optional[AutoencoderKL] = None
+        self.ddim: Optional[Tuple[FlaxDDIMScheduler, DDIMSchedulerState]] = None
 
     def log(self, message: Any) -> None:
         if self.verbose and jax.process_index() == 0:
@@ -249,12 +258,149 @@ class FlaxTrainerUNetPseudo3D:
         self.log(f'Total parameters: {count_params(self.params)}')
         self.log(f'Temporal parameters: {count_params(self.params, "temporal")}')
 
+    def _load_inference_models(self) -> None:
+        assert jax.process_index() == 0, 'not main process'
+        if self.text_encoder is None:
+            self.log('Load text encoder')
+            self.text_encoder = CLIPTextModel.from_pretrained(
+                    self.pretrained_model,
+                    subfolder = 'text_encoder'
+            )
+        if self.tokenizer is None:
+            self.log('Load tokenizer')
+            self.tokenizer = CLIPTokenizer.from_pretrained(
+                    self.pretrained_model,
+                    subfolder = 'tokenizer'
+            )
+        if self.vae is None:
+            self.log('Load vae')
+            self.vae = AutoencoderKL.from_pretrained(
+                    self.pretrained_model,
+                    subfolder = 'vae'
+            )
+        if self.ddim is None:
+            self.log('Load ddim scheduler')
+            # tuple(scheduler , scheduler state)
+            self.ddim = FlaxDDIMScheduler.from_pretrained(
+                    self.pretrained_model,
+                    subfolder = 'scheduler',
+                    from_pt = True
+            )
+
+    def _unload_inference_models(self) -> None:
+        self.text_encoder = None
+        self.tokenizer = None
+        self.vae = None
+        self.ddim = None
+
+    def sample(self,
+            params: Union[Dict[str, Any], FrozenDict[str, Any]],
+            prompt: str,
+            image_path: str,
+            num_frames: int,
+            replicate_params: bool = True,
+            neg_prompt: str = '',
+            steps: int = 50,
+            cfg: float = 9.0,
+            unload_after_usage: bool = False
+    ) -> List[Image.Image]:
+        assert jax.process_index() == 0, 'not main process'
+        self.log('Sample')
+        self._load_inference_models()
+        with torch.no_grad():
+            tokens = self.tokenizer(
+                [ prompt ],
+                truncation = True,
+                return_overflowing_tokens = False,
+                padding = 'max_length',
+                return_tensors = 'pt'
+            ).input_ids
+            neg_tokens = self.tokenizer(
+                [ neg_prompt ],
+                truncation = True,
+                return_overflowing_tokens = False,
+                padding = 'max_length',
+                return_tensors = 'pt'
+            ).input_ids
+            encoded_prompt = self.text_encoder(input_ids = tokens).last_hidden_state
+            encoded_neg_prompt = self.text_encoder(input_ids = neg_tokens).last_hidden_state
+            hint_latent = torch.tensor(np.asarray(Image.open(image_path))).permute(2,0,1).to(torch.float32).div(255).mul(2).sub(1).unsqueeze(0)
+            hint_latent = self.vae.encode(hint_latent).latent_dist.mean * self.vae.config.scaling_factor  #0.18215 # deterministic
+            hint_latent = hint_latent.unsqueeze(2).repeat_interleave(num_frames, 2)
+            mask = torch.zeros_like(hint_latent[:,0:1,:,:,:]) # zero mask, e.g. skip masking for now
+            init_latent = torch.randn_like(hint_latent)
+            # move to devices
+            encoded_prompt = jnp.array(encoded_prompt.numpy())
+            encoded_neg_prompt = jnp.array(encoded_neg_prompt.numpy())
+            hint_latent = jnp.array(hint_latent.numpy())
+            mask = jnp.array(mask.numpy())
+            init_latent = init_latent.repeat(jax.device_count(), 1, 1, 1, 1)
+            init_latent = jnp.array(init_latent.numpy())
+            self.ddim = (self.ddim[0], self.ddim[0].set_timesteps(self.ddim[1], steps))
+            timesteps = self.ddim[1].timesteps
+            if replicate_params:
+                params = jax_utils.replicate(params)
+            ddim_state = jax_utils.replicate(self.ddim[1])
+            encoded_prompt = jax_utils.replicate(encoded_prompt)
+            encoded_neg_prompt = jax_utils.replicate(encoded_neg_prompt)
+            hint_latent = jax_utils.replicate(hint_latent)
+            mask = jax_utils.replicate(mask)
+            # sampling fun
+            def sample_loop(init_latent, ddim_state, t, params, encoded_prompt, encoded_neg_prompt, hint_latent, mask):
+                latent_model_input = jnp.concatenate([init_latent, mask, hint_latent], axis = 1)
+                pred = self.model.apply(
+                        { 'params': params },
+                        latent_model_input,
+                        t,
+                        encoded_prompt
+                ).sample
+                if cfg != 1.0:
+                    neg_pred = self.model.apply(
+                            { 'params': params },
+                            latent_model_input,
+                            t,
+                            encoded_neg_prompt
+                    ).sample
+                    pred = neg_pred + cfg * (pred - neg_pred)
+                # TODO check if noise is added at the right dimension
+                init_latent, ddim_state = self.ddim[0].step(ddim_state, pred, t, init_latent).to_tuple()
+                return init_latent, ddim_state
+            p_sample_loop = jax.pmap(sample_loop, 'sample', donate_argnums = ())
+            pbar_sample = trange(len(timesteps), desc = 'Sample', dynamic_ncols = True, smoothing = 0.1, disable = not self.verbose)
+            init_latent = shard(init_latent)
+            for i in pbar_sample:
+                t = timesteps[i].repeat(self.num_devices)
+                t = shard(t)
+                init_latent, ddim_state = p_sample_loop(init_latent, ddim_state, t, params, encoded_prompt, encoded_neg_prompt, hint_latent, mask)
+            # decode
+            self.log('Decode')
+            init_latent = torch.tensor(np.array(init_latent))
+            init_latent = init_latent / self.vae.config.scaling_factor
+            # d:0 b:1 c:2 f:3 h:4 w:5 -> d b f c h w
+            init_latent = init_latent.permute(0, 1, 3, 2, 4, 5)
+            images = []
+            pbar_decode = trange(len(init_latent), desc = 'Decode', dynamic_ncols = True)
+            for sample in init_latent:
+                ims = self.vae.decode(sample.squeeze()).sample
+                ims = ims.add(1).div(2).mul(255).round().clamp(0, 255).to(torch.uint8).permute(0,2,3,1).numpy()
+                ims = [ Image.fromarray(x) for x in ims ]
+                for im in ims:
+                    images.append(im)
+                pbar_decode.update(1)
+        if unload_after_usage:
+            self._unload_inference_models()
+        return images
+
+    def get_params_from_state(self, state: TrainState) -> FrozenDict[Any, str]:
+        return FrozenDict(jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params)))
+
     def train(self,
             dataloader: DataLoader,
             lr: float,
             num_frames: int,
             log_every_step: int = 10,
             save_every_epoch: int = 1,
+            sample_every_epoch: int = 1,
             output_dir: str = 'output',
             warmup: float = 0,
             decay: float = 0,
@@ -316,7 +462,7 @@ class FlaxTrainerUNetPseudo3D:
             def compute_loss(
                     params: Dict[str, Any],
                     batch: Dict[str, jax.Array],
-                    sample_rng: jax.random.PRNGKeyArray
+                    sample_rng: jax.random.PRNGKeyArray # unused, dataloader provides everything
             ) -> jax.Array:
                 # 'latent_model_input': latent_model_input
                 # 'encoder_hidden_states': encoder_hidden_states
@@ -388,11 +534,11 @@ class FlaxTrainerUNetPseudo3D:
                 self.log('Setting up wandb')
                 self._setup_wandb(hyper_params)
             self.log(hyper_params)
-            output_path = os.path.join(output_dir, str(global_step))
+            output_path = os.path.join(output_dir, str(global_step), 'unet')
             self.log(f'saving checkpoint to {output_path}')
             self.model.save_pretrained(
                     save_directory = output_path,
-                    params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params)),
+                    params = self.get_params_from_state(state),#jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params)),
                     is_main_process = True
             )
 
@@ -417,7 +563,9 @@ class FlaxTrainerUNetPseudo3D:
                     disable = jax.process_index() > 0
             )
             for batch in dataloader:
-                #batch = { k: (v.astype(self.dtype) if v.dtype == np.float32 else v) for k,v in batch.items() }
+                # keep input + gt as float32, results in fp32 loss and grad
+                # otherwise uncomment the following to cast to the model dtype
+                # batch = { k: (v.astype(self.dtype) if v.dtype == np.float32 else v) for k,v in batch.items() }
                 batch = shard(batch)
                 state, train_metric, train_rngs = p_train_step(
                         state, batch, train_rngs
@@ -436,13 +584,27 @@ class FlaxTrainerUNetPseudo3D:
                 pbar_steps.update(1)
                 global_step += 1
             if epoch % save_every_epoch == 0 and jax.process_index() == 0:
-                output_path = os.path.join(output_dir, str(global_step))
+                output_path = os.path.join(output_dir, str(global_step), 'unet')
                 self.log(f'saving checkpoint to {output_path}')
                 self.model.save_pretrained(
                         save_directory = output_path,
-                        params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params)),
+                        params = self.get_params_from_state(state),#jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params)),
                         is_main_process = True
                 )
                 self.log(f'checkpoint saved ')
+            if epoch % sample_every_epoch == 0 and jax.process_index() == 0:
+                images = self.sample(
+                        params = state.params,
+                        replicate_params = False,
+                        prompt = 'dancing person',
+                        image_path = 'testimage.png',
+                        num_frames = num_frames,
+                        steps = 50,
+                        cfg = 9.0,
+                        unload_after_usage = False
+                )
+                os.makedirs(os.path.join('image_output', str(epoch)), exist_ok = True)
+                for i, im in enumerate(images):
+                    im.save(os.path.join('image_output', str(epoch), str(i).zfill(5) + '.png'), optimize = True)
             pbar_epoch.update(1)
 

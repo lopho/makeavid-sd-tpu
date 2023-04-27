@@ -10,8 +10,8 @@ import random
 
 import numpy as np
 
-# min frames = 129
 
+@torch.no_grad()
 def collate_fn(
         batch: List[Dict[str, Any]],
         noise_scheduler: DDPMScheduler,

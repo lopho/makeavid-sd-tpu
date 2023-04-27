@@ -23,6 +23,7 @@ def train(
         weight_decay: float = 1e-2,
         log_every_step: int = 50,
         save_every_epoch: int = 1,
+        sample_every_epoch: int = 1,
         seed: int = 0,
         dtype: str = 'bfloat16',
         param_dtype: str = 'float32',
@@ -44,8 +45,6 @@ def train(
             use_memory_efficient_attention = use_memory_efficient_attention,
             verbose = verbose
     )
-    if use_wandb:
-        trainer.enable_wandb()
     log('\n----------------')
     log('Init dataset')
     dataloader = load_dataset(
@@ -55,16 +54,20 @@ def train(
             batch_size = batch_size * trainer.num_devices,
             num_frames = num_frames,
             num_workers = min(trainer.num_devices * 2, os.cpu_count() - 1),
-            as_numpy = True
+            as_numpy = True,
+            shuffle = True
     )
     log('\n----------------')
     log('Train')
+    if use_wandb:
+        trainer.enable_wandb()
     trainer.train(
             dataloader = dataloader,
             epochs = epochs,
             num_frames = num_frames,
             log_every_step = log_every_step,
             save_every_epoch = save_every_epoch,
+            sample_every_epoch = sample_every_epoch,
             lr = lr,
             warmup = warmup,
             decay = decay,
@@ -95,6 +98,7 @@ if __name__ == '__main__':
     parser.add_argument('--sample_size', type = int, nargs = 2, default = [64, 64])
     parser.add_argument('--log_every_step', type = int, default = 250)
     parser.add_argument('--save_every_epoch', type = int, default = 1)
+    parser.add_argument('--sample_every_epoch', type = int, default = 1)
     parser.add_argument('--seed', type = int, default = 0)
     parser.add_argument('--use_memory_efficient_attention', type = bool_type, default = True)
     parser.add_argument('--dtype', choices = ['float32', 'bfloat16', 'float16'], default = 'bfloat16')
@@ -125,6 +129,7 @@ if __name__ == '__main__':
             use_memory_efficient_attention = args.use_memory_efficient_attention,
             log_every_step = args.log_every_step,
             save_every_epoch = args.save_every_epoch,
+            sample_every_epoch = args.sample_every_epoch,
             verbose = args.verbose,
             use_wandb = args.wandb
     )
