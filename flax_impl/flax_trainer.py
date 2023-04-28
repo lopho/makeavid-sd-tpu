@@ -5,7 +5,6 @@ import os
 import random
 import math
 import time
-import json
 import numpy as np
 from tqdm.auto import tqdm, trange
 
@@ -28,7 +27,6 @@ from diffusers import AutoencoderKL
 from diffusers.schedulers.scheduling_ddim_flax import FlaxDDIMScheduler, DDIMSchedulerState
 from transformers import CLIPTextModel, CLIPTokenizer
 from PIL import Image
-import einops
 
 
 from flax_unet_pseudo3d_condition import UNetPseudo3DConditionModel

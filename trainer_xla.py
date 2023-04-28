@@ -39,8 +39,8 @@ class TempoTrainerXLA:
             unet.requires_grad_(True)
         self.model: UNetPseudo3DConditionModel = unet.to(device = self.device)
         #self.model = torch.compile(self.model, backend = 'aot_torchxla_trace_once')
-        self.params = [ *filter(lambda p: p.requires_grad, self.model.parameters()) ]
-        self.optim: torch.optim.Optimizer = torch.optim.AdamW(self.params, lr = lr)
+        self.params = lambda: filter(lambda p: p.requires_grad, self.model.parameters())
+        self.optim: torch.optim.Optimizer = torch.optim.AdamW(self.params(), lr = lr)
         def lr_warmup(warmup_steps: int = 0):
             def lambda_lr(step: int) -> float:
                 if step < warmup_steps:

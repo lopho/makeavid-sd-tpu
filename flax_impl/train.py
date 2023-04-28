@@ -1,4 +1,7 @@
 
+import jax
+_ = jax.device_count() # ugly hack to prevent tpu comms to lock/race or smth smh
+
 from typing import Tuple, Optional
 import os
 from argparse import ArgumentParser
@@ -13,6 +16,7 @@ def train(
         dataset_cache_dir: Optional[str] = None,
         from_pt: bool = True,
         convert2d: bool = False,
+        only_temporal: bool = True,
         sample_size: Tuple[int, int] = (64, 64),
         lr: float = 5e-5,
         batch_size: int = 1,
@@ -43,7 +47,8 @@ def train(
             dtype = dtype,
             param_dtype = param_dtype,
             use_memory_efficient_attention = use_memory_efficient_attention,
-            verbose = verbose
+            verbose = verbose,
+            only_temporal = only_temporal
     )
     log('\n----------------')
     log('Init dataset')
@@ -88,6 +93,7 @@ if __name__ == '__main__':
     parser.add_argument('-b', '--batch_size', type = int, default = 1)
     parser.add_argument('-f', '--num_frames', type = int, default = 24)
     parser.add_argument('-e', '--epochs', type = int, default = 2)
+    parser.add_argument('--only_temporal', type = bool_type, default = True)
     parser.add_argument('--dataset_cache_dir', type = str, default = None)
     parser.add_argument('--from_pt', type = bool_type, default = True)
     parser.add_argument('--convert2d', type = bool_type, default = False)
@@ -113,6 +119,7 @@ if __name__ == '__main__':
             model_path = args.model_path,
             from_pt = args.from_pt,
             convert2d = args.convert2d,
+            only_temporal = args.only_temporal,
             output_dir = args.output_dir,
             dataset_cache_dir = args.dataset_cache_dir,
             batch_size = args.batch_size,
