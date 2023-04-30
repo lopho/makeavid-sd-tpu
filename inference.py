@@ -115,7 +115,7 @@ class InferenceUNetPseudo3D:
         scheduler, scheduler_state = scheduler_cls.from_pretrained(
                 self.model_path,
                 subfolder = 'scheduler',
-                dtype = self.dtype
+                dtype = jnp.float32
         )
         self.scheduler: scheduler_cls = scheduler
         self.params['scheduler'] = scheduler_state
@@ -215,8 +215,10 @@ class InferenceUNetPseudo3D:
                 width = width,
                 height = height
         )
-        rng = jax.random.PRNGKey(seed)
-        rngs = jax.random.split(rng, self.device_count)
+        # splitting rngs kills the crab
+        #rng = jax.random.PRNGKey(seed)
+        #rngs = jax.random.split(rng, self.device_count)
+        rngs = jnp.array([ jax.random.PRNGKey(seed + i) for i in range(self.device_count) ])
         params = jax_utils.replicate(self.params)
         tokens = shard(tokens)
         neg_tokens = shard(neg_tokens)
@@ -305,7 +307,12 @@ class InferenceUNetPseudo3D:
                     encoded_neg_prompt
             ).sample
             noise_pred = noise_pred_uncond + cfg * (noise_pred - noise_pred_uncond)
-            latents, scheduler_state = self.scheduler.step(scheduler_state, noise_pred, t, latents).to_tuple()
+            latents, scheduler_state = self.scheduler.step(
+                    scheduler_state,
+                    noise_pred.astype(jnp.float32),
+                    t,
+                    latents.astype(jnp.float32)
+            ).to_tuple()
             return latents, scheduler_state
 
         latents, _ = jax.lax.fori_loop(0, inference_steps, sample_loop, (latents, scheduler_state))
