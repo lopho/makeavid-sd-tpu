@@ -5,8 +5,8 @@ import jax
 import jax.numpy as jnp
 import flax.linen as nn
 
-from flax_attention_pseudo3d import TransformerPseudo3DModel
-from flax_resnet_pseudo3d import ResnetBlockPseudo3D, DownsamplePseudo3D, UpsamplePseudo3D
+from .flax_attention_pseudo3d import TransformerPseudo3DModel
+from .flax_resnet_pseudo3d import ResnetBlockPseudo3D, DownsamplePseudo3D, UpsamplePseudo3D
 
 
 class UNetMidBlockPseudo3DCrossAttn(nn.Module):

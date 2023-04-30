@@ -29,7 +29,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from PIL import Image
 
 
-from flax_unet_pseudo3d_condition import UNetPseudo3DConditionModel
+from .flax_unet_pseudo3d_condition import UNetPseudo3DConditionModel
 
 
 def seed_all(seed: int) -> jax.random.PRNGKeyArray:

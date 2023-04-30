@@ -10,7 +10,7 @@ from diffusers.configuration_utils import ConfigMixin, flax_register_to_config
 from diffusers.models.modeling_flax_utils import FlaxModelMixin
 from diffusers.utils import BaseOutput
 
-from flax_unet_pseudo3d_blocks import (
+from .flax_unet_pseudo3d_blocks import (
         CrossAttnDownBlockPseudo3D,
         CrossAttnUpBlockPseudo3D,
         DownBlockPseudo3D,
@@ -22,7 +22,7 @@ from flax_unet_pseudo3d_blocks import (
 #        Timesteps
 #)
 from diffusers.models.embeddings_flax import FlaxTimestepEmbedding, FlaxTimesteps
-from flax_resnet_pseudo3d import ConvPseudo3D
+from .flax_resnet_pseudo3d import ConvPseudo3D
 
 
 class UNetPseudo3DConditionOutput(BaseOutput):
