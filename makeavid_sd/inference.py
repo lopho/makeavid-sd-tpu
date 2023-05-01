@@ -54,10 +54,12 @@ class InferenceUNetPseudo3D:
     def __init__(self,
             model_path: str,
             scheduler_cls: SchedulerType = FlaxDDIMScheduler,
-            dtype: jnp.dtype = jnp.float16
+            dtype: jnp.dtype = jnp.float16,
+            hf_auth_token: Union[str, None] = None
     ) -> None:
         self.dtype = dtype
         self.model_path = model_path
+        self.hf_auth_token = hf_auth_token
 
         self.params: Dict[str, FrozenDict[str, Any]] = {}
         unet, unet_params = UNetPseudo3DConditionModel.from_pretrained(
@@ -67,7 +69,8 @@ class InferenceUNetPseudo3D:
                 sample_size = (64, 64),
                 dtype = self.dtype,
                 param_dtype = dtypestr(self.dtype),
-                use_memory_efficient_attention = True
+                use_memory_efficient_attention = True,
+                use_auth_token = self.hf_auth_token
         )
         self.unet: UNetPseudo3DConditionModel = unet
         unet_params = castto(self.dtype, self.unet, unet_params)
@@ -77,7 +80,8 @@ class InferenceUNetPseudo3D:
                 self.model_path,
                 subfolder = 'vae',
                 from_pt = True,
-                dtype = self.dtype
+                dtype = self.dtype,
+                use_auth_token = self.hf_auth_token
         )
         self.vae: FlaxAutoencoderKL = vae
         vae_params = castto(self.dtype, self.vae, vae_params)
@@ -87,7 +91,8 @@ class InferenceUNetPseudo3D:
                 self.model_path,
                 subfolder = 'text_encoder',
                 from_pt = True,
-                dtype = self.dtype
+                dtype = self.dtype,
+                use_auth_token = self.hf_auth_token
         )
         text_encoder_params = text_encoder.params
         del text_encoder._params
@@ -100,7 +105,8 @@ class InferenceUNetPseudo3D:
                 subfolder = 'unet',
                 from_pt = True,
                 dtype = self.dtype,
-                use_memory_efficient_attention = True
+                use_memory_efficient_attention = True,
+                use_auth_token = self.hf_auth_token
         )
         imunet_params = castto(self.dtype, imunet, imunet_params)
         self.imunet: FlaxUNet2DConditionModel = imunet
@@ -108,12 +114,14 @@ class InferenceUNetPseudo3D:
         del imunet_params
         self.tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(
                 self.model_path,
-                subfolder = 'tokenizer'
+                subfolder = 'tokenizer',
+                use_auth_token = self.hf_auth_token
         )
         scheduler, scheduler_state = scheduler_cls.from_pretrained(
                 self.model_path,
                 subfolder = 'scheduler',
-                dtype = jnp.float32
+                dtype = jnp.float32,
+                use_auth_token = self.hf_api_key
         )
         self.scheduler: scheduler_cls = scheduler
         self.params['scheduler'] = scheduler_state
@@ -125,7 +133,8 @@ class InferenceUNetPseudo3D:
         scheduler, scheduler_state = scheduler_cls.from_pretrained(
                 self.model_path,
                 subfolder = 'scheduler',
-                dtype = jnp.float32
+                dtype = jnp.float32,
+                use_auth_token = self.hf_api_key
         )
         self.scheduler: scheduler_cls = scheduler
         self.params['scheduler'] = scheduler_state
