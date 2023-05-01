@@ -27,7 +27,7 @@ from diffusers import (
 
 from transformers import FlaxCLIPTextModel, CLIPTokenizer
 
-from flax_impl import UNetPseudo3DConditionModel
+from .flax_impl.flax_unet_pseudo3d_condition import UNetPseudo3DConditionModel
 
 SchedulerType = Union[
         FlaxDDIMScheduler,
@@ -230,9 +230,11 @@ class InferenceUNetPseudo3D:
                 width = width,
                 height = height
         )
-        # splitting rngs kills the crab
+        # NOTE splitting rngs is not deterministic,
+        # running on different device counts gives different seeds
         #rng = jax.random.PRNGKey(seed)
         #rngs = jax.random.split(rng, self.device_count)
+        # manually assign seeded RNGs to devices for reproducability 
         rngs = jnp.array([ jax.random.PRNGKey(seed + i) for i in range(self.device_count) ])
         params = jax_utils.replicate(self.params)
         tokens = shard(tokens)
@@ -473,21 +475,3 @@ def _p_generate(
             use_imagegen
     )
 
-
-# example
-# hint_image = Image.open('testimage6.png')
-# mask_image = Image.new('L', hint_image.size, color = 0)
-# prompt = "Dancing man funny break dance, happy rhythmically waving his arms against grey textured street wall. Playful crazy man dance emotions. Breakdancing, street dancing, hiphop, freestyle dance. Lifestyle"
-# model = InferenceUNetPseudo3D(
-#         model_path = './model/ep38',
-#         scheduler_cls = FlaxDDIMScheduler,#FlaxPNDMScheduler,#FlaxDDIMScheduler,
-#         dtype = jnp.float16
-# )
-# images = model.generate(
-#         prompt = [prompt]*model.device_count,
-#         hint_image = hint_image,
-#         inference_steps = 100,
-#         mask_image = mask_image,
-#         cfg = 12,
-#         seed = 1
-# )
