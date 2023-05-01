@@ -88,6 +88,11 @@ def collate_fn(
             'noise': noise
     }
 
+def worker_init_fn(worker_id: int):
+    wseed = torch.initial_seed() % 4294967294 # max val for random 2**32 - 1
+    random.seed(wseed)
+    np.random.seed(wseed)
+
 
 def load_dataset(
         dataset_path: str,
@@ -119,6 +124,7 @@ def load_dataset(
         persistent_workers = num_workers > 0,
         drop_last = True,
         shuffle = shuffle,
+        worker_init_fn = worker_init_fn,
         collate_fn = partial(collate_fn,
                 noise_scheduler = noise_scheduler,
                 num_frames = num_frames,
