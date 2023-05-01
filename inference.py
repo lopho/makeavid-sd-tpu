@@ -14,7 +14,7 @@ from flax.training.common_utils import shard
 from PIL import Image
 import einops
 
-from diffusers import FlaxAutoencoderKL
+from diffusers import FlaxAutoencoderKL, FlaxUNet2DConditionModel
 from diffusers import (
         FlaxDDIMScheduler,
         FlaxDDPMScheduler,
@@ -39,6 +39,17 @@ SchedulerType = Union[
         FlaxScoreSdeVeScheduler
 ]
 
+def dtypestr(x: jnp.dtype):
+    if x == jnp.float32: return 'float32'
+    elif x == jnp.float16: return 'float16'
+    elif x == jnp.bfloat16: return 'bfloat16'
+    else: raise
+def castto(dtype, m, x):
+    if dtype == jnp.float32: return m.to_fp32(x)
+    elif dtype == jnp.float16: return m.to_fp16(x)
+    elif dtype == jnp.bfloat16: return m.to_bf16(x)
+    else: raise
+
 class InferenceUNetPseudo3D:
     def __init__(self,
             model_path: str,
@@ -47,23 +58,14 @@ class InferenceUNetPseudo3D:
     ) -> None:
         self.dtype = dtype
         self.model_path = model_path
-        def dtypestr(x: jnp.dtype):
-            if x == jnp.float32: return 'float32'
-            elif x == jnp.float16: return 'float16'
-            elif x == jnp.bfloat16: return 'bfloat16'
-            else: raise
-        def castto(dtype, m, x):
-            if dtype == jnp.float32: return m.to_fp32(x)
-            elif dtype == jnp.float16: return m.to_fp16(x)
-            elif dtype == jnp.bfloat16: return m.to_bf16(x)
-            else: raise
+
         self.params: Dict[str, FrozenDict[str, Any]] = {}
         unet, unet_params = UNetPseudo3DConditionModel.from_pretrained(
                 self.model_path,
                 subfolder = 'unet',
                 from_pt = False,
                 sample_size = (64, 64),
-                dtype = dtypestr(self.dtype),
+                dtype = self.dtype,
                 param_dtype = dtypestr(self.dtype),
                 use_memory_efficient_attention = True
         )
@@ -93,6 +95,17 @@ class InferenceUNetPseudo3D:
         self.text_encoder: FlaxCLIPTextModel = text_encoder
         self.params['text_encoder'] = FrozenDict(text_encoder_params)
         del text_encoder_params
+        imunet, imunet_params = FlaxUNet2DConditionModel.from_pretrained(
+                'runwayml/stable-diffusion-v1-5',
+                subfolder = 'unet',
+                from_pt = True,
+                dtype = self.dtype,
+                use_memory_efficient_attention = True
+        )
+        imunet_params = castto(self.dtype, imunet, imunet_params)
+        self.imunet: FlaxUNet2DConditionModel = imunet
+        self.params['imunet'] = FrozenDict(imunet_params)
+        del imunet_params
         self.tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(
                 self.model_path,
                 subfolder = 'tokenizer'
@@ -175,8 +188,8 @@ class InferenceUNetPseudo3D:
 
     def generate(self,
             prompt: Union[str, List[str]],
-            hint_image: Union[Image.Image, List[Image.Image]],
             inference_steps: int,
+            hint_image: Union[Image.Image, List[Image.Image], None] = None,
             mask_image: Union[Image.Image, List[Image.Image], None] = None,
             neg_prompt: Union[str, List[str]] = '',
             cfg: float = 10.0,
@@ -193,6 +206,11 @@ class InferenceUNetPseudo3D:
             prompt = [ prompt ]
         batch_size = len(prompt)
         assert batch_size % self.device_count == 0, f'batch size must be multiple of {self.device_count}'
+        if hint_image is None:
+            hint_image = Image.new('RGB', (width, height), color = (0,0,0))
+            use_imagegen = True
+        else:
+            use_imagegen = False
         if isinstance(hint_image, Image.Image):
             hint_image = [ hint_image ] * batch_size
         assert len(hint_image) == batch_size, f'number of hint images must be equal to batch size {batch_size} but is {len(hint_image)}'
@@ -232,7 +250,8 @@ class InferenceUNetPseudo3D:
             width,
             cfg,
             rngs,
-            params
+            params,
+            use_imagegen
         )
         if images.ndim == 5:
             images = einops.rearrange(images, 'd f c h w -> (d f) h w c')
@@ -254,7 +273,8 @@ class InferenceUNetPseudo3D:
             width,
             cfg: float,
             rng: jax.random.KeyArray,
-            params: Union[Dict[str, Any], FrozenDict[str, Any]]
+            params: Union[Dict[str, Any], FrozenDict[str, Any]],
+            use_imagegen: bool
     ) -> List[Image.Image]:
         batch_size = tokens.shape[0]
         latent_h = height // self.vae_scale_factor
@@ -268,22 +288,76 @@ class InferenceUNetPseudo3D:
         )
         encoded_prompt = self.text_encoder(tokens, params = params['text_encoder'])[0]
         encoded_neg_prompt = self.text_encoder(neg_tokens, params = params['text_encoder'])[0]
-        hint = self.vae.apply(
-                {'params': params['vae']},
-                hint,
-                method = self.vae.encode
-        ).latent_dist.mean * self.vae.config.scaling_factor
-        # NOTE vae keeps channels last for encode, but rearranges to channels first for decode
-        # b0 h1 w2 c3 -> b0 c3 h1 w2
-        hint = hint.transpose((0, 3, 1, 2))
+
+        if use_imagegen:
+            image_latent_shape = (batch_size, self.vae.config.latent_channels, latent_h, latent_w)
+            image_latents = jax.random.normal(
+                    rng,
+                    shape = image_latent_shape,
+                    dtype = jnp.float32
+            ) * params['scheduler'].init_noise_sigma
+            image_scheduler_state = self.scheduler.set_timesteps(
+                    params['scheduler'],
+                    num_inference_steps = inference_steps,
+                    shape = image_latents.shape
+            )
+            def image_sample_loop(step, args):
+                image_latents, image_scheduler_state = args
+                t = image_scheduler_state.timesteps[step]
+                tt = jnp.broadcast_to(t, image_latents.shape[0])
+                latents_input = self.scheduler.scale_model_input(image_scheduler_state, image_latents, t)
+                noise_pred = self.imunet.apply(
+                        {'params': params['imunet']},
+                        latents_input,
+                        tt,
+                        encoder_hidden_states = encoded_prompt
+                ).sample
+                noise_pred_uncond = self.imunet.apply(
+                        {'params': params['imunet']},
+                        latents_input,
+                        tt,
+                        encoder_hidden_states = encoded_neg_prompt
+                ).sample
+                noise_pred = noise_pred_uncond + cfg * (noise_pred - noise_pred_uncond)
+                image_latents, image_scheduler_state = self.scheduler.step(
+                        image_scheduler_state,
+                        noise_pred.astype(jnp.float32),
+                        t,
+                        image_latents
+                ).to_tuple()
+                return image_latents, image_scheduler_state
+            image_latents, _ = jax.lax.fori_loop(
+                    0, inference_steps,
+                    image_sample_loop,
+                    (image_latents, image_scheduler_state)
+            )
+            hint = image_latents
+        else:
+            hint = self.vae.apply(
+                    {'params': params['vae']},
+                    hint,
+                    method = self.vae.encode
+            ).latent_dist.mean * self.vae.config.scaling_factor
+            # NOTE vae keeps channels last for encode, but rearranges to channels first for decode
+            # b0 h1 w2 c3 -> b0 c3 h1 w2
+            hint = hint.transpose((0, 3, 1, 2))
+
         hint = jnp.expand_dims(hint, axis = 2).repeat(num_frames, axis = 2)
         mask = jax.image.resize(mask, (*mask.shape[:-2], *hint.shape[-2:]), method = 'nearest')
         mask = jnp.expand_dims(mask, axis = 2).repeat(num_frames, axis = 2)
         # NOTE jax normal distribution is shit with float16 + bfloat16
         # SEE https://github.com/google/jax/discussions/13798
         # generate random at float32
-        latents = jax.random.normal(rng, shape = latent_shape, dtype = jnp.float32) * params['scheduler'].init_noise_sigma
-        scheduler_state = self.scheduler.set_timesteps(params['scheduler'], num_inference_steps = inference_steps, shape = latents.shape)
+        latents = jax.random.normal(
+                rng,
+                shape = latent_shape,
+                dtype = jnp.float32
+        ) * params['scheduler'].init_noise_sigma
+        scheduler_state = self.scheduler.set_timesteps(
+                params['scheduler'],
+                num_inference_steps = inference_steps,
+                shape = latents.shape
+        )
 
         def sample_loop(step, args):
             latents, scheduler_state = args
@@ -312,7 +386,11 @@ class InferenceUNetPseudo3D:
             ).to_tuple()
             return latents, scheduler_state
 
-        latents, _ = jax.lax.fori_loop(0, inference_steps, sample_loop, (latents, scheduler_state))
+        latents, _ = jax.lax.fori_loop(
+                0, inference_steps,
+                sample_loop,
+                (latents, scheduler_state)
+        )
         latents = 1 / self.vae.config.scaling_factor * latents
         latents = einops.rearrange(latents, 'b c f h w -> (b f) c h w')
         num_images = len(latents)
@@ -353,14 +431,16 @@ class InferenceUNetPseudo3D:
                 None,   #  8 width
                 None,   #  9 cfg
                 0,      # 10 rng
-                0       # 11 params
+                0,      # 11 params
+                None,   # 12 use_imagegen
         ),
         static_broadcasted_argnums = ( # trigger recompilation on change
                 0,      # inference_class
                 5,      # inference_steps
                 6,      # num_frames
                 7,      # height
-                8       # width
+                8,      # width
+                12,     # use_imagegen
         )
 )
 def _p_generate(
@@ -375,7 +455,8 @@ def _p_generate(
         width,
         cfg,
         rng,
-        params
+        params,
+        use_imagegen
 ):
     return inference_class._generate(
             tokens,
@@ -388,7 +469,8 @@ def _p_generate(
             width,
             cfg,
             rng,
-            params
+            params,
+            use_imagegen
     )
 
 
@@ -399,8 +481,7 @@ def _p_generate(
 # model = InferenceUNetPseudo3D(
 #         model_path = './model/ep38',
 #         scheduler_cls = FlaxDDIMScheduler,#FlaxPNDMScheduler,#FlaxDDIMScheduler,
-#         dtype = jnp.float16,
-#         low_vram = True
+#         dtype = jnp.float16
 # )
 # images = model.generate(
 #         prompt = [prompt]*model.device_count,
