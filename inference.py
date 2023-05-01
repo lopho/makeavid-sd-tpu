@@ -43,10 +43,8 @@ class InferenceUNetPseudo3D:
     def __init__(self,
             model_path: str,
             scheduler_cls: SchedulerType = FlaxDDIMScheduler,
-            dtype: jnp.dtype = jnp.float16,
-            low_vram: bool = True
+            dtype: jnp.dtype = jnp.float16
     ) -> None:
-        self.low_vram = low_vram
         self.dtype = dtype
         self.model_path = model_path
         def dtypestr(x: jnp.dtype):
@@ -102,7 +100,6 @@ class InferenceUNetPseudo3D:
         scheduler, scheduler_state = scheduler_cls.from_pretrained(
                 self.model_path,
                 subfolder = 'scheduler',
-                #dtype = self.dtype
                 dtype = jnp.float32
         )
         self.scheduler: scheduler_cls = scheduler
@@ -284,26 +281,26 @@ class InferenceUNetPseudo3D:
         mask = jnp.expand_dims(mask, axis = 2).repeat(num_frames, axis = 2)
         # NOTE jax normal distribution is shit with float16 + bfloat16
         # SEE https://github.com/google/jax/discussions/13798
-        # generate random at float32 then cast to dtype
+        # generate random at float32
         latents = jax.random.normal(rng, shape = latent_shape, dtype = jnp.float32) * params['scheduler'].init_noise_sigma
         scheduler_state = self.scheduler.set_timesteps(params['scheduler'], num_inference_steps = inference_steps, shape = latents.shape)
 
         def sample_loop(step, args):
             latents, scheduler_state = args
             t = scheduler_state.timesteps[step]#jnp.array(scheduler_state.timesteps, dtype = jnp.int32)[step]
-            t = jnp.broadcast_to(t, latents.shape[0])
+            tt = jnp.broadcast_to(t, latents.shape[0])
             latents_input = self.scheduler.scale_model_input(scheduler_state, latents, t)
             latents_input = jnp.concatenate([latents_input, mask, hint], axis = 1)
             noise_pred = self.unet.apply(
                     { 'params': params['unet'] },
                     latents_input,
-                    t,
+                    tt,
                     encoded_prompt
             ).sample
             noise_pred_uncond = self.unet.apply(
                     { 'params': params['unet'] },
                     latents_input,
-                    t,
+                    tt,
                     encoded_neg_prompt
             ).sample
             noise_pred = noise_pred_uncond + cfg * (noise_pred - noise_pred_uncond)
@@ -311,7 +308,7 @@ class InferenceUNetPseudo3D:
                     scheduler_state,
                     noise_pred.astype(jnp.float32),
                     t,
-                    latents.astype(jnp.float32)
+                    latents
             ).to_tuple()
             return latents, scheduler_state
 
@@ -319,40 +316,32 @@ class InferenceUNetPseudo3D:
         latents = 1 / self.vae.config.scaling_factor * latents
         latents = einops.rearrange(latents, 'b c f h w -> (b f) c h w')
         num_images = len(latents)
-        if self.low_vram:
-            images_out = jnp.zeros(
-                    (
-                            num_images,
-                            self.vae.config.out_channels,
-                            height,
-                            width
-                    ),
-                    dtype = self.dtype
-            )
-            def decode_loop(step, images_out):
-                # NOTE vae keeps channels last for encode, but rearranges to channels first for decode
-                im = self.vae.apply(
-                        { 'params': params['vae'] },
-                        jnp.expand_dims(latents[step], axis=0),
-                        method = self.vae.decode
-                ).sample
-                images_out = images_out.at[step].set(im[0])
-                return images_out
-            images_out = jax.lax.fori_loop(0, num_images, decode_loop, images_out)
-        else:
-            images_out = self.vae.apply(
+        images_out = jnp.zeros(
+                (
+                        num_images,
+                        self.vae.config.out_channels,
+                        height,
+                        width
+                ),
+                dtype = self.dtype
+        )
+        def decode_loop(step, images_out):
+            # NOTE vae keeps channels last for encode, but rearranges to channels first for decode
+            im = self.vae.apply(
                     { 'params': params['vae'] },
-                    latents,
+                    jnp.expand_dims(latents[step], axis = 0),
                     method = self.vae.decode
             ).sample
-        images_out = ((images_out / 2 + 0.5).clip(0, 1) * 255).round().clip(0,255).astype(jnp.uint8)
+            images_out = images_out.at[step].set(im[0])
+            return images_out
+        images_out = jax.lax.fori_loop(0, num_images, decode_loop, images_out)
+        images_out = ((images_out / 2 + 0.5) * 255).round().clip(0, 255).astype(jnp.uint8)
         return images_out
 
-# Static argnums are inference_class, num_inference_steps, height, width. A change would trigger recompilation.
-# Non-static args are (sharded) input tensors mapped over their first dimension (hence, `0`).
+
 @partial(
         jax.pmap,
-        in_axes = (
+        in_axes = ( # 0 -> split across batch dim, None -> duplicate
                 None,   #  0 inference_class
                 0,      #  1 tokens
                 0,      #  2 neg_tokens
@@ -366,7 +355,7 @@ class InferenceUNetPseudo3D:
                 0,      # 10 rng
                 0       # 11 params
         ),
-        static_broadcasted_argnums = (
+        static_broadcasted_argnums = ( # trigger recompilation on change
                 0,      # inference_class
                 5,      # inference_steps
                 6,      # num_frames
