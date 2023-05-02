@@ -121,7 +121,7 @@ class InferenceUNetPseudo3D:
                 self.model_path,
                 subfolder = 'scheduler',
                 dtype = jnp.float32,
-                use_auth_token = self.hf_api_key
+                use_auth_token = self.hf_auth_token
         )
         self.scheduler: scheduler_cls = scheduler
         self.params['scheduler'] = scheduler_state
@@ -134,7 +134,7 @@ class InferenceUNetPseudo3D:
                 self.model_path,
                 subfolder = 'scheduler',
                 dtype = jnp.float32,
-                use_auth_token = self.hf_api_key
+                use_auth_token = self.hf_auth_token
         )
         self.scheduler: scheduler_cls = scheduler
         self.params['scheduler'] = scheduler_state
