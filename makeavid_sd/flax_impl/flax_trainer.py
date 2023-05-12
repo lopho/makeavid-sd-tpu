@@ -1,3 +1,18 @@
+# Make-A-Video Latent Diffusion Models
+# Copyright (C) 2023  Lopho <contact@lopho.org>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from typing import Any, Optional, Union, Tuple, Dict, List
 
@@ -82,7 +97,7 @@ def map_2d_to_pseudo3d(
     return new_params
 
 
-class FlaxTrainerUNetPseudo3D:
+class TrainerUNetPseudo3D:
     def __init__(self,
             model_path: str,
             from_pt: bool = True,

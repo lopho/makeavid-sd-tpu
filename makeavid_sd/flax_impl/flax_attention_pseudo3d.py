@@ -1,3 +1,18 @@
+# Make-A-Video Latent Diffusion Models
+# Copyright (C) 2023  Lopho <contact@lopho.org>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from typing import Optional
 
@@ -7,8 +22,6 @@ import flax.linen as nn
 
 import einops
 
-#from flax_memory_efficient_attention import jax_memory_efficient_attention
-#from flax_attention import FlaxAttention
 from diffusers.models.attention_flax import FlaxAttention
 
 
@@ -134,53 +147,53 @@ class BasicTransformerBlockPseudo3D(nn.Module):
             frames_length: Optional[int] = None,
             height: Optional[int] = None,
             width: Optional[int] = None
-        ) -> jax.Array:
-            if context is not None and frames_length is not None:
-                context = context.repeat(frames_length, axis = 0)
-            # self attention
-            norm_hidden_states = self.norm1(hidden_states)
-            hidden_states = self.attn1(norm_hidden_states) + hidden_states
-            # cross attention
-            norm_hidden_states = self.norm2(hidden_states)
-            hidden_states = self.attn2(
-                    norm_hidden_states,
-                    context = context
-            ) + hidden_states
-            # temporal attention
-            if frames_length is not None:
-                #bf, hw, c = hidden_states.shape
-                # (b f) (h w) c -> b f (h w) c
-                #hidden_states = hidden_states.reshape(bf // frames_length, frames_length, hw, c)
-                #b, f, hw, c = hidden_states.shape
-                # b f (h w) c -> b (h w) f c
-                #hidden_states = hidden_states.transpose(0, 2, 1, 3)
-                # b (h w) f c -> (b h w) f c
-                #hidden_states = hidden_states.reshape(b * hw, frames_length, c)
-                hidden_states = einops.rearrange(
-                        hidden_states,
-                        '(b f) (h w) c -> (b h w) f c',
-                        f = frames_length,
-                        h = height,
-                        w = width
-                )
-                norm_hidden_states = self.norm_temporal(hidden_states)
-                hidden_states = self.attn_temporal(norm_hidden_states) + hidden_states
-                # (b h w) f c -> b (h w) f c
-                #hidden_states = hidden_states.reshape(b, hw, f, c)
-                # b (h w) f c -> b f (h w) c
-                #hidden_states = hidden_states.transpose(0, 2, 1, 3)
-                # b f h w c -> (b f) (h w) c
-                #hidden_states = hidden_states.reshape(bf, hw, c)
-                hidden_states = einops.rearrange(
-                        hidden_states,
-                        '(b h w) f c -> (b f) (h w) c',
-                        f = frames_length,
-                        h = height,
-                        w = width
-                )
-            norm_hidden_states = self.norm3(hidden_states)
-            hidden_states = self.ff(norm_hidden_states) + hidden_states
-            return hidden_states
+    ) -> jax.Array:
+        if context is not None and frames_length is not None:
+            context = context.repeat(frames_length, axis = 0)
+        # self attention
+        norm_hidden_states = self.norm1(hidden_states)
+        hidden_states = self.attn1(norm_hidden_states) + hidden_states
+        # cross attention
+        norm_hidden_states = self.norm2(hidden_states)
+        hidden_states = self.attn2(
+                norm_hidden_states,
+                context = context
+        ) + hidden_states
+        # temporal attention
+        if frames_length is not None:
+            #bf, hw, c = hidden_states.shape
+            # (b f) (h w) c -> b f (h w) c
+            #hidden_states = hidden_states.reshape(bf // frames_length, frames_length, hw, c)
+            #b, f, hw, c = hidden_states.shape
+            # b f (h w) c -> b (h w) f c
+            #hidden_states = hidden_states.transpose(0, 2, 1, 3)
+            # b (h w) f c -> (b h w) f c
+            #hidden_states = hidden_states.reshape(b * hw, frames_length, c)
+            hidden_states = einops.rearrange(
+                    hidden_states,
+                    '(b f) (h w) c -> (b h w) f c',
+                    f = frames_length,
+                    h = height,
+                    w = width
+            )
+            norm_hidden_states = self.norm_temporal(hidden_states)
+            hidden_states = self.attn_temporal(norm_hidden_states) + hidden_states
+            # (b h w) f c -> b (h w) f c
+            #hidden_states = hidden_states.reshape(b, hw, f, c)
+            # b (h w) f c -> b f (h w) c
+            #hidden_states = hidden_states.transpose(0, 2, 1, 3)
+            # b f h w c -> (b f) (h w) c
+            #hidden_states = hidden_states.reshape(bf, hw, c)
+            hidden_states = einops.rearrange(
+                    hidden_states,
+                    '(b h w) f c -> (b f) (h w) c',
+                    f = frames_length,
+                    h = height,
+                    w = width
+            )
+        norm_hidden_states = self.norm3(hidden_states)
+        hidden_states = self.ff(norm_hidden_states) + hidden_states
+        return hidden_states
 
 
 class FeedForward(nn.Module):
@@ -188,6 +201,7 @@ class FeedForward(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     def setup(self) -> None:
+        # _0/_2 naming for compatibility with torch.nn.ModuleList
         self.net_0 = GEGLU(self.dim, self.dtype)
         self.net_2 = nn.Dense(self.dim, dtype = self.dtype)
 

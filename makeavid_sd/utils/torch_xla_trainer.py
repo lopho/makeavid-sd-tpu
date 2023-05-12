@@ -1,15 +1,30 @@
+# Make-A-Video Latent Diffusion Models
+# Copyright (C) 2023  Lopho <contact@lopho.org>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import os
 os.environ['PJRT_DEVICE'] = 'TPU'
 
 from tqdm.auto import tqdm
+
+from torch_xla.core import xla_model
 import torch
 from torch.utils.data import DataLoader
-from torch_xla.core import xla_model
-from diffusers import UNetPseudo3DConditionModel
-from dataset import load_dataset
+from ..torch_impl.torch_unet_pseudo3d_condition import UNetPseudo3DConditionModel
 
-
-class TempoTrainerXLA:
+class TrainerUNetPseudo3D:
     def __init__(self,
             pretrained: str = 'lxj616/make-a-stable-diffusion-video-timelapse',
             lr: float = 1e-4,
@@ -74,31 +89,4 @@ class TempoTrainerXLA:
                     xla_model.mark_step()
                 if global_step % log_every == 0:
                     pbar.set_postfix({ 'loss': loss.detach().item(), 'epoch': epoch })
-
-def main():
-    pretrained: str = 'lxj616/make-a-stable-diffusion-video-timelapse'
-    dataset_path: str = './storage/dataset/tempofunk'
-    dtype: torch.dtype = torch.bfloat16
-    trainer = TempoTrainerXLA(
-            pretrained = pretrained,
-            lr = 1e-5,
-            dtype = dtype
-    )
-    dataloader: DataLoader = load_dataset(
-            dataset_path = dataset_path,
-            pretrained = pretrained,
-            batch_size = 1,
-            num_frames = 10,
-            num_workers = 1,
-            dtype = dtype
-    )
-    trainer.train(
-            dataloader = dataloader,
-            epochs = 1000,
-            log_every = 1,
-            save_every = 1000
-    )
-
-if __name__ == '__main__':
-    main()
 

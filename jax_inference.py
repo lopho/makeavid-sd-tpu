@@ -1,6 +1,20 @@
+# Make-A-Video Latent Diffusion Models
+# Copyright (C) 2023  Lopho <contact@lopho.org>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-from typing import Any, Union, Tuple, List, Dict
-import os
+from typing import Any, Union, Optional, Tuple, List, Dict
 import gc
 from functools import partial
 
@@ -17,27 +31,45 @@ import einops
 from diffusers import FlaxAutoencoderKL, FlaxUNet2DConditionModel
 from diffusers import (
         FlaxDDIMScheduler,
-        FlaxDDPMScheduler,
         FlaxPNDMScheduler,
         FlaxLMSDiscreteScheduler,
         FlaxDPMSolverMultistepScheduler,
-        FlaxKarrasVeScheduler,
-        FlaxScoreSdeVeScheduler
 )
+from diffusers.schedulers.scheduling_ddim_flax import DDIMSchedulerState
+from diffusers.schedulers.scheduling_pndm_flax import PNDMSchedulerState
+from diffusers.schedulers.scheduling_lms_discrete_flax import LMSDiscreteSchedulerState
+from diffusers.schedulers.scheduling_dpmsolver_multistep_flax import DPMSolverMultistepSchedulerState
 
 from transformers import FlaxCLIPTextModel, CLIPTokenizer
 
-from .flax_impl.flax_unet_pseudo3d_condition import UNetPseudo3DConditionModel
+from makeavid_sd.flax_impl import FlaxUNetPseudo3DConditionModel
 
 SchedulerType = Union[
         FlaxDDIMScheduler,
-        FlaxDDPMScheduler,
         FlaxPNDMScheduler,
         FlaxLMSDiscreteScheduler,
         FlaxDPMSolverMultistepScheduler,
-        FlaxKarrasVeScheduler,
-        FlaxScoreSdeVeScheduler
 ]
+
+SchedulerStateType = Union[
+        DDIMSchedulerState,
+        PNDMSchedulerState,
+        LMSDiscreteSchedulerState,
+        DPMSolverMultistepSchedulerState,
+]
+
+SCHEDULERS: Dict[str, SchedulerType] = {
+        'dpm': FlaxDPMSolverMultistepScheduler, # husbando
+        'ddim': FlaxDDIMScheduler,
+        #'PLMS': FlaxPNDMScheduler, # its not correctly implemented in diffusers, output is bad, but at least it "works"
+        #'LMS': FlaxLMSDiscreteScheduler, # borked
+        #    image_latents, image_scheduler_state = scheduler.step(
+        #    File "/mnt/work1/make_a_vid/makeavid-space/.venv/lib/python3.10/site-packages/diffusers/schedulers/scheduling_lms_discrete_flax.py", line 255, in step
+        #    order = min(timestep + 1, order)
+        #    jax._src.errors.ConcretizationTypeError: Abstract tracer value encountered where concrete value is expected: Traced<ShapedArray(bool[])>with<DynamicJaxprTrace(level=1/1)>
+        #    The problem arose with the `bool` function. 
+        # The error occurred while tracing the function scanned_fun at /mnt/work1/make_a_vid/makeavid-space/.venv/lib/python3.10/site-packages/jax/_src/lax/control_flow/loops.py:1668 for scan. This concrete value was not available in Python because it depends on the values of the arguments loop_carry[0] and loop_carry[1][1].timesteps
+}
 
 def dtypestr(x: jnp.dtype):
     if x == jnp.float32: return 'float32'
@@ -53,7 +85,6 @@ def castto(dtype, m, x):
 class InferenceUNetPseudo3D:
     def __init__(self,
             model_path: str,
-            scheduler_cls: SchedulerType = FlaxDDIMScheduler,
             dtype: jnp.dtype = jnp.float16,
             hf_auth_token: Union[str, None] = None
     ) -> None:
@@ -62,20 +93,32 @@ class InferenceUNetPseudo3D:
         self.hf_auth_token = hf_auth_token
 
         self.params: Dict[str, FrozenDict[str, Any]] = {}
-        unet, unet_params = UNetPseudo3DConditionModel.from_pretrained(
-                self.model_path,
-                subfolder = 'unet',
-                from_pt = False,
-                sample_size = (64, 64),
-                dtype = self.dtype,
-                param_dtype = dtypestr(self.dtype),
-                use_memory_efficient_attention = True,
-                use_auth_token = self.hf_auth_token
-        )
-        self.unet: UNetPseudo3DConditionModel = unet
-        unet_params = castto(self.dtype, self.unet, unet_params)
-        self.params['unet'] = FrozenDict(unet_params)
-        del unet_params
+        try:
+            import traceback
+            print('initializing unet')
+            unet, unet_params = FlaxUNetPseudo3DConditionModel.from_pretrained(
+                    self.model_path,
+                    subfolder = 'unet',
+                    from_pt = False,
+                    sample_size = (64, 64),
+                    dtype = self.dtype,
+                    param_dtype = dtypestr(self.dtype),
+                    use_memory_efficient_attention = True,
+                    use_auth_token = self.hf_auth_token
+            )
+            self.unet: FlaxUNetPseudo3DConditionModel = unet
+            print('casting unet params')
+            unet_params = castto(self.dtype, self.unet, unet_params)
+            print('storing unet params')
+            self.params['unet'] = FrozenDict(unet_params)
+            print('deleting unet params')
+            del unet_params
+        except Exception as e:
+            print(e)
+            self.failed = ''.join(traceback.format_exception(None, e, e.__traceback__))
+            traceback.print_exc()
+            return
+        self.failed = False
         vae, vae_params = FlaxAutoencoderKL.from_pretrained(
                 self.model_path,
                 subfolder = 'vae',
@@ -117,27 +160,26 @@ class InferenceUNetPseudo3D:
                 subfolder = 'tokenizer',
                 use_auth_token = self.hf_auth_token
         )
-        scheduler, scheduler_state = scheduler_cls.from_pretrained(
-                self.model_path,
-                subfolder = 'scheduler',
-                dtype = jnp.float32,
-                use_auth_token = self.hf_auth_token
-        )
-        self.scheduler: scheduler_cls = scheduler
-        self.params['scheduler'] = scheduler_state
+        self.schedulers: Dict[str, Dict[str, SchedulerType]] = {}
+        for scheduler_name in SCHEDULERS:
+            if scheduler_name not in ['KarrasVe', 'SDEVe']:
+                scheduler, scheduler_state = SCHEDULERS[scheduler_name].from_pretrained(
+                        self.model_path,
+                        subfolder = 'scheduler',
+                        dtype = jnp.float32,
+                        use_auth_token = self.hf_auth_token
+                )
+            else:
+                scheduler, scheduler_state = SCHEDULERS[scheduler_name].from_pretrained(
+                        self.model_path,
+                        subfolder = 'scheduler',
+                        use_auth_token = self.hf_auth_token
+                )
+            self.schedulers[scheduler_name] = scheduler
+            self.params[scheduler_name] = scheduler_state
         self.vae_scale_factor: int = int(2 ** (len(self.vae.config.block_out_channels) - 1))
         self.device_count = jax.device_count()
         gc.collect()
-
-    def set_scheduler(self, scheduler_cls: SchedulerType) -> None:
-        scheduler, scheduler_state = scheduler_cls.from_pretrained(
-                self.model_path,
-                subfolder = 'scheduler',
-                dtype = jnp.float32,
-                use_auth_token = self.hf_auth_token
-        )
-        self.scheduler: scheduler_cls = scheduler
-        self.params['scheduler'] = scheduler_state
 
     def prepare_inputs(self,
             prompt: List[str],
@@ -188,7 +230,7 @@ class InferenceUNetPseudo3D:
         # binarize mask
         mask = mask.at[mask < 0.5].set(0)
         mask = mask.at[mask >= 0.5].set(1)
-        # mask
+        # mask hint image
         hint = hint * (mask < 0.5)
         # b,h,w,c -> b,c,h,w
         hint = hint.transpose((0,3,1,2))
@@ -196,16 +238,18 @@ class InferenceUNetPseudo3D:
         return tokens, neg_tokens, hint, mask
 
     def generate(self,
-            prompt: Union[str, List[str]],
-            inference_steps: int,
+            prompt: Union[str, List[str]] = '',
+            inference_steps: int = 20,
             hint_image: Union[Image.Image, List[Image.Image], None] = None,
             mask_image: Union[Image.Image, List[Image.Image], None] = None,
             neg_prompt: Union[str, List[str]] = '',
-            cfg: float = 10.0,
+            cfg: float = 15.0,
+            cfg_image: Optional[float] = None,
             num_frames: int = 24,
             width: int = 512,
             height: int = 512,
-            seed: int = 0
+            seed: int = 0,
+            scheduler_type: str = 'dpm'
     ) -> List[List[Image.Image]]:
         assert inference_steps > 0, f'number of inference steps must be > 0 but is {inference_steps}'
         assert num_frames > 0, f'number of frames must be > 0 but is {num_frames}'
@@ -231,6 +275,7 @@ class InferenceUNetPseudo3D:
         if isinstance(neg_prompt, str):
             neg_prompt = [ neg_prompt ] * batch_size
         assert len(neg_prompt) == batch_size, f'number of negative prompts must be equal to batch size {batch_size} but is {len(neg_prompt)}'
+        assert scheduler_type in SCHEDULERS, f'unknown type of noise scheduler: {scheduler_type}, must be one of {list(SCHEDULERS.keys())}'
         tokens, neg_tokens, hint, mask = self.prepare_inputs(
                 prompt = prompt,
                 neg_prompt = neg_prompt,
@@ -239,11 +284,14 @@ class InferenceUNetPseudo3D:
                 width = width,
                 height = height
         )
+        if cfg_image is None:
+            cfg_image = cfg
+        #params['scheduler'] = scheduler_state
         # NOTE splitting rngs is not deterministic,
         # running on different device counts gives different seeds
         #rng = jax.random.PRNGKey(seed)
         #rngs = jax.random.split(rng, self.device_count)
-        # manually assign seeded RNGs to devices for reproducability 
+        # manually assign seeded RNGs to devices for reproducability
         rngs = jnp.array([ jax.random.PRNGKey(seed + i) for i in range(self.device_count) ])
         params = jax_utils.replicate(self.params)
         tokens = shard(tokens)
@@ -260,9 +308,11 @@ class InferenceUNetPseudo3D:
             height,
             width,
             cfg,
+            cfg_image,
             rngs,
             params,
-            use_imagegen
+            use_imagegen,
+            scheduler_type,
         )
         if images.ndim == 5:
             images = einops.rearrange(images, 'd f c h w -> (d f) h w c')
@@ -283,9 +333,11 @@ class InferenceUNetPseudo3D:
             height,
             width,
             cfg: float,
+            cfg_image: float,
             rng: jax.random.KeyArray,
             params: Union[Dict[str, Any], FrozenDict[str, Any]],
-            use_imagegen: bool
+            use_imagegen: bool,
+            scheduler_type: str
     ) -> List[Image.Image]:
         batch_size = tokens.shape[0]
         latent_h = height // self.vae_scale_factor
@@ -300,15 +352,18 @@ class InferenceUNetPseudo3D:
         encoded_prompt = self.text_encoder(tokens, params = params['text_encoder'])[0]
         encoded_neg_prompt = self.text_encoder(neg_tokens, params = params['text_encoder'])[0]
 
+        scheduler = self.schedulers[scheduler_type]
+        scheduler_state = params[scheduler_type]
+
         if use_imagegen:
             image_latent_shape = (batch_size, self.vae.config.latent_channels, latent_h, latent_w)
             image_latents = jax.random.normal(
                     rng,
                     shape = image_latent_shape,
                     dtype = jnp.float32
-            ) * params['scheduler'].init_noise_sigma
-            image_scheduler_state = self.scheduler.set_timesteps(
-                    params['scheduler'],
+            ) * scheduler_state.init_noise_sigma
+            image_scheduler_state = scheduler.set_timesteps(
+                    scheduler_state,
                     num_inference_steps = inference_steps,
                     shape = image_latents.shape
             )
@@ -316,21 +371,21 @@ class InferenceUNetPseudo3D:
                 image_latents, image_scheduler_state = args
                 t = image_scheduler_state.timesteps[step]
                 tt = jnp.broadcast_to(t, image_latents.shape[0])
-                latents_input = self.scheduler.scale_model_input(image_scheduler_state, image_latents, t)
+                latents_input = scheduler.scale_model_input(image_scheduler_state, image_latents, t)
                 noise_pred = self.imunet.apply(
-                        {'params': params['imunet']},
+                        { 'params': params['imunet']} ,
                         latents_input,
                         tt,
                         encoder_hidden_states = encoded_prompt
                 ).sample
                 noise_pred_uncond = self.imunet.apply(
-                        {'params': params['imunet']},
+                        { 'params': params['imunet'] },
                         latents_input,
                         tt,
                         encoder_hidden_states = encoded_neg_prompt
                 ).sample
-                noise_pred = noise_pred_uncond + cfg * (noise_pred - noise_pred_uncond)
-                image_latents, image_scheduler_state = self.scheduler.step(
+                noise_pred = noise_pred_uncond + cfg_image * (noise_pred - noise_pred_uncond)
+                image_latents, image_scheduler_state = scheduler.step(
                         image_scheduler_state,
                         noise_pred.astype(jnp.float32),
                         t,
@@ -345,7 +400,7 @@ class InferenceUNetPseudo3D:
             hint = image_latents
         else:
             hint = self.vae.apply(
-                    {'params': params['vae']},
+                    { 'params': params['vae'] },
                     hint,
                     method = self.vae.encode
             ).latent_dist.mean * self.vae.config.scaling_factor
@@ -363,9 +418,9 @@ class InferenceUNetPseudo3D:
                 rng,
                 shape = latent_shape,
                 dtype = jnp.float32
-        ) * params['scheduler'].init_noise_sigma
-        scheduler_state = self.scheduler.set_timesteps(
-                params['scheduler'],
+        ) * scheduler_state.init_noise_sigma
+        scheduler_state = scheduler.set_timesteps(
+                scheduler_state,
                 num_inference_steps = inference_steps,
                 shape = latents.shape
         )
@@ -374,7 +429,7 @@ class InferenceUNetPseudo3D:
             latents, scheduler_state = args
             t = scheduler_state.timesteps[step]#jnp.array(scheduler_state.timesteps, dtype = jnp.int32)[step]
             tt = jnp.broadcast_to(t, latents.shape[0])
-            latents_input = self.scheduler.scale_model_input(scheduler_state, latents, t)
+            latents_input = scheduler.scale_model_input(scheduler_state, latents, t)
             latents_input = jnp.concatenate([latents_input, mask, hint], axis = 1)
             noise_pred = self.unet.apply(
                     { 'params': params['unet'] },
@@ -389,7 +444,7 @@ class InferenceUNetPseudo3D:
                     encoded_neg_prompt
             ).sample
             noise_pred = noise_pred_uncond + cfg * (noise_pred - noise_pred_uncond)
-            latents, scheduler_state = self.scheduler.step(
+            latents, scheduler_state = scheduler.step(
                     scheduler_state,
                     noise_pred.astype(jnp.float32),
                     t,
@@ -441,17 +496,20 @@ class InferenceUNetPseudo3D:
                 None,   #  7 height
                 None,   #  8 width
                 None,   #  9 cfg
-                0,      # 10 rng
-                0,      # 11 params
-                None,   # 12 use_imagegen
+                None,   # 10 cfg_image
+                0,      # 11 rng
+                0,      # 12 params
+                None,   # 13 use_imagegen
+                None,   # 14 scheduler_type
         ),
-        static_broadcasted_argnums = ( # trigger recompilation on change
+        static_broadcasted_argnums = ( # trigger recompilation (if cache miss) on change
                 0,      # inference_class
                 5,      # inference_steps
                 6,      # num_frames
                 7,      # height
                 8,      # width
-                12,     # use_imagegen
+                13,     # use_imagegen
+                14,     # scheduler_type
         )
 )
 def _p_generate(
@@ -460,14 +518,16 @@ def _p_generate(
         neg_tokens,
         hint,
         mask,
-        inference_steps,
-        num_frames,
-        height,
-        width,
-        cfg,
+        inference_steps: int,
+        num_frames: int,
+        height: int,
+        width: int,
+        cfg: float,
+        cfg_image: float,
         rng,
         params,
-        use_imagegen
+        use_imagegen: bool,
+        scheduler_type: str
 ):
     return inference_class._generate(
             tokens,
@@ -479,8 +539,10 @@ def _p_generate(
             height,
             width,
             cfg,
+            cfg_image,
             rng,
             params,
-            use_imagegen
+            use_imagegen,
+            scheduler_type
     )
 

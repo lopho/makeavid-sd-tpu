@@ -1,3 +1,18 @@
+# Make-A-Video Latent Diffusion Models
+# Copyright (C) 2023  Lopho <contact@lopho.org>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from typing import Tuple, Union
 
@@ -6,10 +21,6 @@ import jax.numpy as jnp
 import flax.linen as nn
 from flax.core.frozen_dict import FrozenDict
 
-from diffusers.configuration_utils import ConfigMixin, flax_register_to_config
-from diffusers.models.modeling_flax_utils import FlaxModelMixin
-from diffusers.utils import BaseOutput
-
 from .flax_unet_pseudo3d_blocks import (
         CrossAttnDownBlockPseudo3D,
         CrossAttnUpBlockPseudo3D,
@@ -17,12 +28,13 @@ from .flax_unet_pseudo3d_blocks import (
         UpBlockPseudo3D,
         UNetMidBlockPseudo3DCrossAttn
 )
-#from flax_embeddings import (
-#        TimestepEmbedding,
-#        Timesteps
-#)
-from diffusers.models.embeddings_flax import FlaxTimestepEmbedding, FlaxTimesteps
+
 from .flax_resnet_pseudo3d import ConvPseudo3D
+
+from diffusers.models.embeddings_flax import FlaxTimestepEmbedding, FlaxTimesteps
+from diffusers.configuration_utils import ConfigMixin, flax_register_to_config
+from diffusers.models.modeling_flax_utils import FlaxModelMixin
+from diffusers.utils import BaseOutput
 
 
 class UNetPseudo3DConditionOutput(BaseOutput):

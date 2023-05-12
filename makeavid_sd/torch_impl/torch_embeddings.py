@@ -1,3 +1,19 @@
+# Make-A-Video Latent Diffusion Models
+# Copyright (C) 2023  Lopho <contact@lopho.org>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import math
 import torch
 from torch import nn
@@ -8,7 +24,7 @@ def get_timestep_embedding(
         flip_sin_to_cos: bool = False,
         downscale_freq_shift: float = 1,
         scale: float = 1,
-        max_period: int = 10000,
+        max_period: int = 10000
 ) -> torch.Tensor:
     """
     This matches the implementation in Denoising Diffusion Probabilistic Models: Create sinusoidal timestep embeddings.
@@ -86,7 +102,7 @@ class Timesteps(nn.Module):
         t_emb = get_timestep_embedding(
             timesteps,
             self.num_channels,
-            flip_sin_to_cos=self.flip_sin_to_cos,
-            downscale_freq_shift=self.downscale_freq_shift,
+            flip_sin_to_cos = self.flip_sin_to_cos,
+            downscale_freq_shift = self.downscale_freq_shift
         )
         return t_emb

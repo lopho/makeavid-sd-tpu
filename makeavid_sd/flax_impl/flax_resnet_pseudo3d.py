@@ -1,3 +1,18 @@
+# Make-A-Video Latent Diffusion Models
+# Copyright (C) 2023  Lopho <contact@lopho.org>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from typing import Optional, Union, Sequence
 
@@ -42,10 +57,10 @@ class ConvPseudo3D(nn.Module):
         x = self.spatial_conv(x)
         if is_video:
             x = einops.rearrange(x, '(b f) h w c -> b f h w c', b = b)
-            b, f, h, w, c = x.shape
         if not convolve_across_time:
             return x
         if is_video:
+            b, f, h, w, c = x.shape
             x = einops.rearrange(x, 'b f h w c -> (b h w) f c')
             x = self.temporal_conv(x)
             x = einops.rearrange(x, '(b h w) f c -> b f h w c', h = h, w = w)
@@ -103,7 +118,6 @@ class DownsamplePseudo3D(nn.Module):
 class ResnetBlockPseudo3D(nn.Module):
     in_channels: int
     out_channels: Optional[int] = None
-    use_nin_shortcut: Optional[bool] = None
     dtype: jnp.dtype = jnp.float32
 
     def setup(self) -> None:
@@ -134,16 +148,13 @@ class ResnetBlockPseudo3D(nn.Module):
                 padding = ((1, 1), (1, 1)),
                 dtype = self.dtype
         )
-        use_nin_shortcut = self.in_channels != out_channels if self.use_nin_shortcut is None else self.use_nin_shortcut
-        self.conv_shortcut = None
-        if use_nin_shortcut:
-            self.conv_shortcut = ConvPseudo3D(
-                    features = self.out_channels,
-                    kernel_size = (1, 1),
-                    strides = (1, 1),
-                    padding = 'VALID',
-                    dtype = self.dtype
-            )
+        self.conv_shortcut = ConvPseudo3D(
+                features = self.out_channels,
+                kernel_size = (1, 1),
+                strides = (1, 1),
+                padding = 'VALID',
+                dtype = self.dtype
+        ) if self.in_channels != out_channels else None
 
     def __call__(self,
             hidden_states: jax.Array,

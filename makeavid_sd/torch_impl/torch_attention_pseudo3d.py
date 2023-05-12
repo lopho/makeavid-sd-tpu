@@ -1,12 +1,27 @@
+# Make-A-Video Latent Diffusion Models
+# Copyright (C) 2023  Lopho <contact@lopho.org>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 from typing import Optional
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from einops import rearrange
 
-from diffusers.models.attention_processor import Attention as CrossAttention
+from diffusers.models.attention_processor import Attention
 #from torch_cross_attention import CrossAttention
 
 
@@ -18,11 +33,10 @@ class TransformerPseudo3DModelOutput:
 class TransformerPseudo3DModel(nn.Module):
     def __init__(self,
             num_attention_heads: int = 16,
-            attention_head_dim: int = 88,
+            attention_head_dim: int = 8,
             in_channels: Optional[int] = None,
             num_layers: int = 1,
             dropout: float = 0.0,
-            norm_num_groups: int = 32,
             cross_attention_dim: Optional[int] = None,
             attention_bias: bool = False
     ) -> None:
@@ -39,9 +53,9 @@ class TransformerPseudo3DModel(nn.Module):
         self.in_channels = in_channels
 
         self.norm = torch.nn.GroupNorm(
-                num_groups = norm_num_groups,
+                num_groups = 32,
                 num_channels = in_channels,
-                eps = 1e-6,
+                eps = 1e-5,
                 affine = True
         )
         self.proj_in = nn.Conv2d(
@@ -55,7 +69,7 @@ class TransformerPseudo3DModel(nn.Module):
         # 3. Define transformers blocks
         self.transformer_blocks = nn.ModuleList(
             [
-                BasicTransformerBlock(
+                BasicTransformerBlockPseudo3D(
                         inner_dim,
                         num_attention_heads,
                         attention_head_dim,
@@ -72,8 +86,7 @@ class TransformerPseudo3DModel(nn.Module):
 
     def forward(self,
             hidden_states: torch.Tensor,
-            encoder_hidden_states: Optional[torch.Tensor] = None,
-            timestep: torch.long = None
+            encoder_hidden_states: Optional[torch.Tensor] = None
     ) -> TransformerPseudo3DModelOutput:
         """
         Args:
@@ -93,35 +106,29 @@ class TransformerPseudo3DModel(nn.Module):
             if `return_dict` is True, otherwise a `tuple`. When returning a tuple, the first element is the sample
             tensor.
         """
-        b, c, *_, h, w = hidden_states.shape
         is_video = hidden_states.ndim == 5
+        w = hidden_states.shape[-1]
         f = None
         if is_video:
             b, c, f, h, w = hidden_states.shape
             hidden_states = rearrange(hidden_states, 'b c f h w -> (b f) c h w')
-            #encoder_hidden_states = encoder_hidden_states.repeat_interleave(f, 0)
 
         # 1. Input
-        batch, channel, height, weight = hidden_states.shape
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
         hidden_states = self.proj_in(hidden_states)
-        inner_dim = hidden_states.shape[1]
-        hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(batch, height * weight, inner_dim)
+        hidden_states = rearrange(hidden_states, 'b c h w -> b (h w) c')
 
         # 2. Blocks
         for block in self.transformer_blocks:
             hidden_states = block(
                     hidden_states,
                     context = encoder_hidden_states,
-                    timestep = timestep,
-                    frames_length = f,
-                    height = height,
-                    weight = weight
+                    num_frames = f
             )
 
         # 3. Output
-        hidden_states = hidden_states.reshape(batch, height, weight, inner_dim).permute(0, 3, 1, 2)
+        hidden_states = rearrange(hidden_states, 'b (h w) c -> b c h w', w = w)
         hidden_states = self.proj_out(hidden_states)
         output = hidden_states + residual
 
@@ -132,22 +139,7 @@ class TransformerPseudo3DModel(nn.Module):
 
 
 
-class BasicTransformerBlock(nn.Module):
-    r"""
-    A basic Transformer block.
-
-    Parameters:
-        dim (`int`): The number of channels in the input and output.
-        num_attention_heads (`int`): The number of heads to use for multi-head attention.
-        attention_head_dim (`int`): The number of channels in each head.
-        dropout (`float`, *optional*, defaults to 0.0): The dropout probability to use.
-        cross_attention_dim (`int`, *optional*): The size of the context vector for cross attention.
-        num_embeds_ada_norm (:
-            obj: `int`, *optional*): The number of diffusion steps used during training. See `Transformer2DModel`.
-        attention_bias (:
-            obj: `bool`, *optional*, defaults to `False`): Configure if the attentions should contain a bias parameter.
-    """
-
+class BasicTransformerBlockPseudo3D(nn.Module):
     def __init__(self,
             dim: int,
             num_attention_heads: int,
@@ -157,84 +149,109 @@ class BasicTransformerBlock(nn.Module):
             attention_bias: bool = False,
     ) -> None:
         super().__init__()
-        self.attn1 = CrossAttention(
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn1 = Attention(
                 query_dim = dim,
                 heads = num_attention_heads,
                 dim_head = attention_head_dim,
                 dropout = dropout,
                 bias = attention_bias
-        )  # is a self-attention
-        self.ff = FeedForward(dim, dropout = dropout)
-        self.attn2 = CrossAttention(
+        )  # self-attention
+        self.norm2 = nn.LayerNorm(dim)
+        self.attn2 = Attention(
                 query_dim = dim,
                 cross_attention_dim = cross_attention_dim,
                 heads = num_attention_heads,
                 dim_head = attention_head_dim,
                 dropout = dropout,
                 bias = attention_bias
-        )  # is self-attn if context is none
-        self.attn_temporal = CrossAttention(
+        )  # self-attention if context is none
+        # temporal self attention
+        self.norm_temporal = nn.LayerNorm(dim)
+        self.attn_temporal = Attention(
                 query_dim = dim,
                 heads = num_attention_heads,
                 dim_head = attention_head_dim,
                 dropout = dropout,
                 bias = attention_bias
-        )  # is a self-attention
-
-        # layer norms
-        self.norm1 = nn.LayerNorm(dim)
-        self.norm2 = nn.LayerNorm(dim)
-        self.norm_temporal = nn.LayerNorm(dim)
+        )  # self-attention
+        # TODO try temporal cross attention
+        """
+        self.norm_temporal_cross = nn.LayerNorm(dim)
+        self.attn_temporal_cross = Attention(
+                query_dim = dim,
+                cross_attention_dim = cross_attention_dim,
+                heads = num_attention_heads,
+                dim_head = attention_head_dim,
+                dropout = dropout,
+                bias = attention_bias
+        )  # self-attention
+        """
+        # feed forward
         self.norm3 = nn.LayerNorm(dim)
+        self.ff = FeedForward(dim, dropout = dropout)
 
     def forward(self,
             hidden_states: torch.Tensor,
             context: Optional[torch.Tensor] = None,
-            timestep: torch.int64 = None,
-            frames_length: Optional[int] = None,
-            height: Optional[int] = None,
-            weight: Optional[int] = None
+            num_frames: Optional[int] = None
     ) -> torch.Tensor:
-        if context is not None and frames_length is not None:
-            context = context.repeat_interleave(frames_length, 0)
-        # 1. Self-Attention
-        norm_hidden_states = (
-            self.norm1(hidden_states)
-        )
-        hidden_states = self.attn1(norm_hidden_states) + hidden_states
-
-        # 2. Cross-Attention
-        norm_hidden_states = (
-            self.norm2(hidden_states)
-        )
+        if context is not None and num_frames is not None:
+            context = context.repeat_interleave(num_frames, 0)
+        # Self-Attention
+        norm_hidden_states = self.norm1(hidden_states)
+        hidden_states = self.attn1(
+                norm_hidden_states
+        ) + hidden_states
+        # Cross-Attention
+        norm_hidden_states = self.norm2(hidden_states)
         hidden_states = self.attn2(
                 norm_hidden_states,
                 encoder_hidden_states = context
         ) + hidden_states
-
-        # append temporal attention
-        if frames_length is not None:
+        """
+            if context is not None and frames_length is not None:
+                context = context.repeat(frames_length, axis = 0)
+            # self attention
+            norm_hidden_states = self.norm1(hidden_states)
+            hidden_states = self.attn1(norm_hidden_states) + hidden_states
+            # cross attention
+            norm_hidden_states = self.norm2(hidden_states)
+            hidden_states = self.attn2(
+                    norm_hidden_states,
+                    context = context
+            ) + hidden_states
+        """
+        # temporal attention
+        if num_frames is not None:
+            bf, s, c = hidden_states.shape
             hidden_states = rearrange(
                     hidden_states,
-                    '(b f) (h w) c -> (b h w) f c',
-                    f = frames_length,
-                    h = height,
-                    w = weight
+                    '(b f) s c -> (b s) f c',
+                    f = num_frames
             )
-            norm_hidden_states = (
-                self.norm_temporal(hidden_states)
-            )
-            hidden_states = self.attn_temporal(norm_hidden_states) + hidden_states
+            # temporal self attention
+            norm_hidden_states = self.norm_temporal(hidden_states)
+            hidden_states = self.attn_temporal(
+                    norm_hidden_states
+            ) + hidden_states
+            # TODO try temporal cross attention
+            """
+            norm_hidden_states = self.norm_temporal_cross(hidden_states)
+            hidden_states= self.attn_temporal_cross(
+                    norm_hidden_states,
+                    encoder_hidden_states = context
+            ) + hidden_states
+            """
             hidden_states = rearrange(
                     hidden_states,
-                    '(b h w) f c -> (b f) (h w) c',
-                    f = frames_length,
-                    h = height,
-                    w = weight
+                    '(b s) f c -> (b f) s c',
+                    f = num_frames,
+                    s = s
             )
-
-        # 3. Feed-forward
-        hidden_states = self.ff(self.norm3(hidden_states)) + hidden_states
+        # Feed-forward
+        norm_hidden_states = self.norm3(hidden_states)
+        hidden_states = self.ff(norm_hidden_states) + hidden_states
         return hidden_states
 
 
@@ -259,36 +276,24 @@ class FeedForward(nn.Module):
         inner_dim = int(dim * mult)
         dim_out = dim_out if dim_out is not None else dim
 
-        geglu = GEGLU(dim, inner_dim)
-
-        self.net = nn.ModuleList([])
-        # project in
-        self.net.append(geglu)
-        # project dropout
-        self.net.append(nn.Dropout(dropout))
-        # project out
-        self.net.append(nn.Linear(inner_dim, dim_out))
+        self.net = nn.Sequential(
+            GEGLU(dim, inner_dim),
+            nn.Dropout(dropout),
+            nn.Linear(inner_dim, dim_out)
+        )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        for module in self.net:
-            hidden_states = module(hidden_states)
+        hidden_states = self.net(hidden_states)
         return hidden_states
 
 
-# feedforward
+# https://arxiv.org/abs/2002.05202
 class GEGLU(nn.Module):
-    r"""
-    A variant of the gated linear unit activation function from https://arxiv.org/abs/2002.05202.
-
-    Parameters:
-        dim_in (`int`): The number of channels in the input.
-        dim_out (`int`): The number of channels in the output.
-    """
-
     def __init__(self, dim_in: int, dim_out: int) -> None:
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_out * 2)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states, gate = self.proj(hidden_states).chunk(2, dim = -1)
-        return hidden_states * F.gelu(gate)
+        return hidden_states * torch.nn.functional.gelu(gate)
+
