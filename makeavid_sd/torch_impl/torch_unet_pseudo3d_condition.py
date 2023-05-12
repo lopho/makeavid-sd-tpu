@@ -20,7 +20,6 @@ import torch
 from torch import nn
 import torch.nn as nn
 
-#from .torch_embeddings import TimestepEmbedding, Timesteps
 from .torch_unet_pseudo3d_blocks import (
     UNetMidBlockPseudo3DCrossAttn,
     DownBlockPseudo3D,
